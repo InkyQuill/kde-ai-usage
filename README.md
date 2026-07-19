@@ -43,13 +43,14 @@
   <img src="./readme/settings.svg?v=7" alt="Settings panel" width="340" valign="top"/>
 </p>
 
-A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple services. Monitor your **Claude** (5-hour session & 7-day weekly), **Antigravity/Google AI Studio**, **OpenAI API**, **Kiro**, **Mistral AI**, and **OpenRouter** usage at a glance with animated segmented bars, live countdown timers, account status, and per-model breakdowns.
+A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple services. Monitor your **Claude** (5-hour session & 7-day weekly), **Antigravity/Google AI Studio**, **OpenAI API**, **Kiro**, **Mistral AI**, **OpenRouter**, **Z.AI**, **GitHub Copilot**, and **DeepSeek** usage or balance at a glance with animated segmented bars, live countdown timers, account status, and per-model breakdowns.
 
 ---
 
 ## Features
 
-- **Multi-service support** — Switch between Claude, Antigravity, OpenAI, Kiro, Mistral, and OpenRouter tabs in the popup
+- **Multi-service support** — Switch between Claude, Antigravity, OpenAI, Kiro, Mistral, OpenRouter, Z.AI, GitHub Copilot, and DeepSeek tabs in the popup
+- **Balance tracking** — DeepSeek current balance with granted / topped-up breakdown
 - **Panel view** — Compact percentage readouts in the taskbar, color-coded by usage level, with an inline spark-line trend
 - **Popup view** — Segmented bars showing exact fill level with reset times and countdowns
 - **Usage chart** — Smooth, glowing area chart of historical usage with a 5H / 24H / 7D window toggle and hover-scrub (point + timestamp on hover). The 24H window plots the session percentage across the whole day, so each 5-hour limit climbing toward 100% and resetting shows up as a sawtooth burn pattern.
@@ -63,7 +64,7 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 - **Live countdowns** — Ticks down in real time, shows "resetting..." when the window flips
 - **Color thresholds** — Amber at 70%, red at 90%
 - **Configurable refresh** — Poll interval from 1 to 30 minutes (default 5), reads credentials from local config files
-- **Pin a service** — Pin any tab so the widget opens to it; otherwise it stays on the last-viewed tab
+- **Pin services** — Pin one or more tabs so they stay visible on the Plasma panel; with no pins, the panel mirrors the active tab
 - **History export / import** — Save and restore usage history as JSON; history is also mirrored to disk so it survives reinstalls
 - **Stale indicator** — Dims if the last fetch failed, shows error inline
 - **Rate-limit backoff** — Respects `retry-after` headers, won't hammer the API
@@ -111,6 +112,25 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 - **Account label** — Displays the account name / identifier from the API
 - **Requires** — An OpenRouter API key set in widget settings
 
+### Z.AI
+- **5-hour token quota** — Shows token usage, limit, percentage, and reset countdown
+- **Monthly tools quota** — Tracks the monthly tools quota percentage, remaining tools, and reset countdown
+- **Model details** — Shows model usage details when the Z.AI API returns them
+- **Credential lookup** — Reads the widget setting first, then `$ZAI_TOKEN`, then `~/.config/zai/token`
+
+### GitHub Copilot
+- **Premium request usage** — Shows monthly GitHub Copilot premium request usage
+- **Configurable quota** — Scales usage against the configured quota, defaulting to 300 requests
+- **Credential lookup** — Reads the widget setting first, then `$GITHUB_TOKEN`, then `~/.config/github-copilot/token`
+- **Requires** — A GitHub token that can read Copilot premium request usage
+
+### DeepSeek
+- **Current balance** — Shows total available balance from the DeepSeek balance API
+- **Balance breakdown** — Displays granted and topped-up balance values
+- **Multi-currency support** — Prefers USD when present, otherwise uses the first balance currency returned by the API
+- **Credential lookup** — Reads the widget setting first, then `$DEEPSEEK_API_KEY`, then `~/.config/deepseek/api-key`
+- **Requires** — A DeepSeek API key
+
 ---
 
 ## Requirements
@@ -153,6 +173,22 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 | Dependency | Notes |
 |---|---|
 | OpenRouter API key | Set in widget settings — no local config file is read |
+
+### For Z.AI Support
+| Dependency | Notes |
+|---|---|
+| Z.AI token | Widget settings, `$ZAI_TOKEN`, or `~/.config/zai/token` |
+
+### For GitHub Copilot Support
+| Dependency | Notes |
+|---|---|
+| GitHub token | Widget settings, `$GITHUB_TOKEN`, or `~/.config/github-copilot/token`; must be able to read Copilot premium request usage |
+| Copilot quota | Optional; configurable in widget settings and defaults to 300 monthly premium requests |
+
+### For DeepSeek Support
+| Dependency | Notes |
+|---|---|
+| DeepSeek API key | Widget settings, `$DEEPSEEK_API_KEY`, or `~/.config/deepseek/api-key` |
 
 All configuration is done in the widget's settings panel (right-click the widget → *Configure*). See [How it works](#how-it-works) below for what each tab reads and where credentials are resolved from.
 
@@ -241,6 +277,15 @@ The widget validates the configured API key against the Mistral API and lists av
 
 ### OpenRouter *(untested)*
 The widget fetches credit usage and limit from the OpenRouter API using the configured key. The popup shows USD spent, the credit limit (if any), and the account label. The usage bar reflects spend as a percentage of the limit; if no limit is set the bar stays empty.
+
+### Z.AI
+The Z.AI tab calls the Z.AI usage quota endpoint with the configured token. It shows the 5-hour token quota, monthly tools quota, reset countdowns, and model details when the API response includes them. The token is resolved from widget settings → `$ZAI_TOKEN` → `~/.config/zai/token`.
+
+### GitHub Copilot
+The GitHub Copilot tab reads monthly premium request usage from the GitHub API. It validates the token against the GitHub user endpoint, then fetches premium request usage and scales it against the configured quota, which defaults to 300. The token is resolved from widget settings → `$GITHUB_TOKEN` → `~/.config/github-copilot/token`, and it must be able to read Copilot premium request usage.
+
+### DeepSeek
+The DeepSeek tab calls `GET https://api.deepseek.com/user/balance` with the configured API key. It shows whether the account has sufficient balance for API calls, the primary total balance, and the granted / topped-up split. The key is resolved from widget settings → `$DEEPSEEK_API_KEY` → `~/.config/deepseek/api-key`.
 
 ### Usage history
 Each refresh appends the current 5-hour and 7-day percentages to a rolling history (the last 500 samples) used by the chart, spark-lines, burn-rate ETA, and period comparison. History is stored in the widget's Plasma config **and** mirrored to `~/.local/share/ai-usage-widget/usage-history-latest.json`, so it survives a full uninstall/reinstall — on first launch with no config history, the widget restores from that file automatically. You can also manually **Export** (writes a timestamped JSON copy) and **Import** from the settings panel. If a saved file is unreadable or in an unrecognized format, it's discarded and history starts fresh rather than erroring out.

@@ -32,11 +32,32 @@
     <entry name="openrouterEnabled" type="Bool">
       <default>false</default>
     </entry>
+    <entry name="zaiEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="copilotEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="deepseekEnabled" type="Bool">
+      <default>false</default>
+    </entry>
     <entry name="mistralApiKey" type="String">
       <default></default>
     </entry>
     <entry name="openrouterApiKey" type="String">
       <default></default>
+    </entry>
+    <entry name="zaiToken" type="String">
+      <default></default>
+    </entry>
+    <entry name="githubToken" type="String">
+      <default></default>
+    </entry>
+    <entry name="deepseekApiKey" type="String">
+      <default></default>
+    </entry>
+    <entry name="copilotQuota" type="Int">
+      <default>300</default>
     </entry>
     <entry name="showUsageChart" type="Bool">
       <default>true</default>
@@ -52,7 +73,7 @@
     <entry name="useThemeAccent" type="Bool">
       <default>false</default>
     </entry>
-    <!-- Pinned tab id (e.g. "claude"); empty = auto (show active/first enabled) -->
+    <!-- Comma-separated pinned tab ids (e.g. "claude,openai"); empty = show active tab -->
     <entry name="pinnedTab" type="String">
       <default></default>
     </entry>

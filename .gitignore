@@ -15,3 +15,5 @@ result
 
 # System junk
 .DS_Store
+
+sources/

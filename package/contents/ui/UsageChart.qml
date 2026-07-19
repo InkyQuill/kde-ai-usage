@@ -9,7 +9,7 @@ Rectangle {
     id: usageChartContainer
     property Item rootItem
 
-    visible: !rootItem.showSettings && rootItem.showUsageChart && rootItem.weeklyUsageHistory.length >= 1 && (rootItem.enabledTabs[rootItem.activeTab] === "claude" || (rootItem.enabledTabs[rootItem.activeTab] === "openai" && rootItem.codexUsageAvailable) || rootItem.enabledTabs[rootItem.activeTab] === "kiro" || rootItem.enabledTabs[rootItem.activeTab] === "antigravity" || rootItem.enabledTabs[rootItem.activeTab] === "openrouter" || rootItem.enabledTabs[rootItem.activeTab] === "mistral")
+    visible: !rootItem.showSettings && rootItem.showUsageChart && rootItem.weeklyUsageHistory.length >= 1 && (rootItem.enabledTabs[rootItem.activeTab] === "claude" || (rootItem.enabledTabs[rootItem.activeTab] === "openai" && rootItem.codexUsageAvailable) || rootItem.enabledTabs[rootItem.activeTab] === "kiro" || rootItem.enabledTabs[rootItem.activeTab] === "antigravity" || rootItem.enabledTabs[rootItem.activeTab] === "openrouter" || rootItem.enabledTabs[rootItem.activeTab] === "mistral" || rootItem.enabledTabs[rootItem.activeTab] === "zai" || rootItem.enabledTabs[rootItem.activeTab] === "copilot" || rootItem.enabledTabs[rootItem.activeTab] === "deepseek")
     Layout.fillWidth: true
     Layout.preferredHeight: implicitHeight
     implicitHeight: 184
@@ -215,7 +215,7 @@ Rectangle {
     // Y-axis labels. For most windows the axis is a 0-100% scale; for the mistral
     // (cost) window it's auto-scaled to the window's max spend, so labels show $.
     readonly property real chartMaxRaw: {
-        if (rootItem.chartWindow !== "mistral")
+        if (rootItem.chartWindow !== "mistral" && rootItem.chartWindow !== "deepseek")
             return 0;
         var pts = rootItem.weeklyUsageHistory;
         var m = 0;
@@ -227,6 +227,8 @@ Rectangle {
     function chartYLabel(fraction) {
         if (rootItem.chartWindow === "mistral")
             return chartMaxRaw > 0 ? "$" + (chartMaxRaw * fraction).toFixed(2) : "";
+        if (rootItem.chartWindow === "deepseek")
+            return chartMaxRaw > 0 ? rootItem.formatMoney(chartMaxRaw * fraction, rootItem.deepseekPrimaryCurrency) : "";
         return Math.round(fraction * 100) + "%";
     }
 
@@ -614,6 +616,8 @@ Rectangle {
                             var pt = pts[chartCanvas.scrubIndex];
                             if (rootItem.chartWindow === "mistral")
                                 return "$" + (pt.raw !== undefined ? pt.raw : 0).toFixed(4);
+                            if (rootItem.chartWindow === "deepseek")
+                                return rootItem.formatMoney(pt.raw !== undefined ? pt.raw : 0, rootItem.deepseekPrimaryCurrency);
                             return Math.round(pt.v) + "%";
                         }
                         font.pixelSize: 11
