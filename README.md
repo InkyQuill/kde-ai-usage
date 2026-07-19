@@ -43,7 +43,7 @@
   <img src="./readme/settings.svg?v=7" alt="Settings panel" width="340" valign="top"/>
 </p>
 
-A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple services. Monitor your **Claude** (5-hour session & 7-day weekly), **Antigravity/Google AI Studio**, **OpenAI API**, **Kiro**, **Mistral AI**, **OpenRouter**, **Z.AI**, **GitHub Copilot**, and **DeepSeek** usage or balance at a glance with animated segmented bars, live countdown timers, account status, and per-model breakdowns.
+A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple services. Monitor your **Claude** subscription windows, **Antigravity/Google AI Studio**, **OpenAI API and Codex plan limits**, **Kiro**, **Mistral AI**, **OpenRouter**, **Z.AI**, **GitHub Copilot**, and **DeepSeek** usage or balance at a glance with animated segmented bars, live countdown timers, account status, and per-model breakdowns.
 
 ---
 
@@ -53,8 +53,8 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 - **Balance tracking** — DeepSeek current balance with granted / topped-up breakdown
 - **Panel view** — Compact percentage readouts in the taskbar, color-coded by usage level, with an inline spark-line trend
 - **Popup view** — Segmented bars showing exact fill level with reset times and countdowns
-- **Usage chart** — Smooth, glowing area chart of historical usage with a 5H / 24H / 7D window toggle and hover-scrub (point + timestamp on hover). The 24H window plots the session percentage across the whole day, so each 5-hour limit climbing toward 100% and resetting shows up as a sawtooth burn pattern.
-- **Burn-rate ETA** — Estimates time to 100% from your recent trend (e.g. "↗ ~3h to 100%") on both the 5-hour and 7-day windows
+- **Usage chart** — Smooth, glowing area chart of historical usage with availability-aware 5H / 24H / 7D choices and hover-scrub (point + timestamp on hover). Session choices disappear when a provider does not report a session window.
+- **Burn-rate ETA** — Estimates time to 100% from your recent trend (e.g. "↗ ~3h to 100%") for each available window
 - **Period comparison** — Shows how today/this week compares to the same point last period (e.g. "+12% vs last week")
 - **Cost aggregation** — Combined API spend across Claude, OpenAI, and OpenRouter in the footer
 - **Animated readouts** — Percentages roll up/down smoothly; the chart's latest point pulses when usage is climbing fast
@@ -74,8 +74,8 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 ## Supported Services
 
 ### Claude (Anthropic)
-- **5-hour session window** — Rolling 5-hour usage limit
-- **7-day weekly window** — Rolling 7-day usage limit
+- **Dynamic subscription windows** — Shows session and weekly limits only when Anthropic reports them
+- **Schema compatibility** — Reads current semantic limit entries with fallbacks for the legacy 5-hour and 7-day fields
 - **Auto-detection** — Reads credentials from `~/.claude/.credentials.json`
 - **Model tracking** — Opus, Sonnet, Haiku usage breakdown (coming soon)
 
@@ -88,6 +88,7 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 ### OpenAI
 - **API usage** — Shows 30-day organization token and estimated cost data from the OpenAI Usage API when an API key is configured
 - **Codex account status** — Detects Codex/ChatGPT login from `~/.codex/auth.json`
+- **Codex plan limits** — Reads the local Codex rate-limit snapshot and labels windows from their actual duration; weekly-only accounts show one weekly row
 - **Separate surfaces** — Codex/ChatGPT plan limits are not the same as OpenAI API organization billing usage
 - **Credential lookup** — Reads the widget setting first, then `$OPENAI_API_KEY`, `~/.config/openai-api-key`, `~/.openai/api-key`, and Codex auth metadata when available
 
@@ -261,13 +262,13 @@ kpackagetool6 -t Plasma/Applet -r org.muddyblack.aiUsageWidgetTest
 ## How it works
 
 ### Claude
-On each refresh cycle the widget reads `~/.claude/.credentials.json` to get the OAuth access token, then calls the Anthropic usage API. The response contains two rolling windows — a 5-hour session window and a 7-day weekly window — each with a utilization percentage and a reset timestamp.
+On each refresh cycle the widget reads `~/.claude/.credentials.json` to get the OAuth access token, then calls Anthropic's subscription usage endpoint. It prefers the current semantic `limits[]` entries and falls back to the legacy `five_hour` and `seven_day` objects. Only windows with usable data are displayed; legacy five-hour support remains available if Anthropic returns it.
 
 ### Antigravity
 The widget reads credentials from the `antigravity-usage` CLI configuration (stored in `~/.config/antigravity-usage/` or `~/Library/Application Support/antigravity-usage/`), then calls the Google Cloud Code API to fetch quota information for all available models.
 
 ### OpenAI
-The OpenAI tab has two independent sections. API usage is fetched from the official OpenAI organization usage endpoint with an API key and summarized over the last 30 days. Codex account status is read locally from `~/.codex/auth.json`; it confirms the Codex/ChatGPT login and plan metadata when present, but it does not provide API billing usage.
+The OpenAI tab has two independent sections. API usage is fetched from the official OpenAI organization usage endpoint with an API key and summarized over the last 30 days. Codex subscription limits are read through the local Codex app-server, with the authenticated web usage endpoint retained as a compatibility fallback. Windows are classified by their actual duration instead of assuming that `primary` means five hours. Codex plan limits are separate from API billing usage.
 
 ### Kiro
 The Kiro tab reads Kiro's locally cached usage state from `~/.config/Kiro/User/globalStorage/state.vscdb`. No API key is needed. The widget extracts the stored credit breakdown, usage percentage, reset date, overage information, and inferred plan tier from that local snapshot, then feeds the percentage into the 30-day chart history.
@@ -288,7 +289,7 @@ The GitHub Copilot tab reads monthly premium request usage from the GitHub API. 
 The DeepSeek tab calls `GET https://api.deepseek.com/user/balance` with the configured API key. It shows whether the account has sufficient balance for API calls, the primary total balance, and the granted / topped-up split. The key is resolved from widget settings → `$DEEPSEEK_API_KEY` → `~/.config/deepseek/api-key`.
 
 ### Usage history
-Each refresh appends the current 5-hour and 7-day percentages to a rolling history (the last 500 samples) used by the chart, spark-lines, burn-rate ETA, and period comparison. History is stored in the widget's Plasma config **and** mirrored to `~/.local/share/ai-usage-widget/usage-history-latest.json`, so it survives a full uninstall/reinstall — on first launch with no config history, the widget restores from that file automatically. You can also manually **Export** (writes a timestamped JSON copy) and **Import** from the settings panel. If a saved file is unreadable or in an unrecognized format, it's discarded and history starts fresh rather than erroring out.
+Each refresh appends only the percentages that the provider actually reports to a rolling history (the last 500 samples) used by the chart, spark-lines, burn-rate ETA, and period comparison. Existing session and weekly history fields are retained even while a window is unavailable, so five-hour charts can return without migration if providers restore that limit. History is stored in the widget's Plasma config **and** mirrored to `~/.local/share/ai-usage-widget/usage-history-latest.json`, so it survives a full uninstall/reinstall — on first launch with no config history, the widget restores from that file automatically. You can also manually **Export** (writes a timestamped JSON copy) and **Import** from the settings panel. If a saved file is unreadable or in an unrecognized format, it's discarded and history starts fresh rather than erroring out.
 
 **Privacy:** No credentials are stored or transmitted anywhere other than the official provider endpoints used by each tab. Usage history (percentages and timestamps only) is written locally to `~/.local/share/ai-usage-widget/`.
 
