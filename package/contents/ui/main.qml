@@ -6,6 +6,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.plasma5support as Plasma5Support
 import org.kde.plasma.plasmoid
+import "../code/UsageWindows.js" as UsageWindows
 
 PlasmoidItem {
     // GPT-4o family
@@ -107,12 +108,14 @@ PlasmoidItem {
     readonly property var claudeApiStatusIncidents: claudeStatus.incidents
     readonly property string claudeApiStatusLatestUpdate: claudeStatus.latestUpdate
     // ── Claude data ───────────────────────────────────────────────────────────
+    property bool sessionAvailable: false
     property real sessionPct: 0
     property real sessionTokensUsed: 0
     property real sessionTokenLimit: 0
     property string sessionResetTime: ""
     property var sessionResetDate: null
     property string sessionCountdown: ""
+    property bool weeklyAvailable: false
     property real weeklyPct: 0
     property real weeklyTokensUsed: 0
     property real weeklyTokenLimit: 0
@@ -184,15 +187,24 @@ PlasmoidItem {
     property string kiroResetTime: ""
     property var kiroResetDate: null
     property string kiroCountdown: ""
-    // ── Codex / ChatGPT-plan usage (from chatgpt.com/backend-api/codex/usage) ──
-    // Two rolling windows like Claude: primary = 5-hour, secondary = weekly.
+    // ── Codex / ChatGPT-plan usage ────────────────────────────────────────────
+    // Windows are classified by their actual duration, never by response order.
     property bool codexUsageAvailable: false
-    property real codexPrimaryPct: 0 // 5-hour window used %
-    property var codexPrimaryResetDate: null
-    property string codexPrimaryCountdown: ""
-    property real codexSecondaryPct: 0 // weekly window used %
-    property var codexSecondaryResetDate: null
-    property string codexSecondaryCountdown: ""
+    property bool codexSessionAvailable: false
+    property real codexSessionPct: 0
+    property var codexSessionResetDate: null
+    property string codexSessionCountdown: ""
+    property bool codexWeeklyAvailable: false
+    property real codexWeeklyPct: 0
+    property var codexWeeklyResetDate: null
+    property string codexWeeklyCountdown: ""
+    // Deprecated compatibility aliases. Keep these until five-hour windows return.
+    readonly property real codexPrimaryPct: root.codexSessionPct
+    readonly property var codexPrimaryResetDate: root.codexSessionResetDate
+    readonly property string codexPrimaryCountdown: root.codexSessionCountdown
+    readonly property real codexSecondaryPct: root.codexWeeklyPct
+    readonly property var codexSecondaryResetDate: root.codexWeeklyResetDate
+    readonly property string codexSecondaryCountdown: root.codexWeeklyCountdown
     property bool codexLimitReached: false
     // Per-model additional rate limits (additional_rate_limits[] from the endpoint)
     // Each entry: { name, primary_pct, primary_reset, primary_countdown, secondary_pct, secondary_reset, secondary_countdown }
@@ -875,21 +887,28 @@ PlasmoidItem {
     // Merge Codex windows into the most recent history point (or create one).
     // Called after fetchCodexUsage() succeeds, separate from recordUsage() since
     // Claude and Codex refresh on different tabs at different times.
-    function recordCodexUsage(primaryPct, weeklyPct) {
+    function recordCodexUsage(sessionPct, weeklyPct, sessionIsAvailable, weeklyIsAvailable) {
         var history = root.usageHistory.slice();
         var now = new Date().getTime();
         // If the last point is recent (<2 min), just patch it in-place.
         if (history.length > 0 && now - history[history.length - 1].t < 120000) {
             var last = history[history.length - 1];
-            last.cp = primaryPct;
-            last.cw = weeklyPct;
+            if (sessionIsAvailable)
+                last.cp = sessionPct;
+
+            if (weeklyIsAvailable)
+                last.cw = weeklyPct;
+
             history[history.length - 1] = last;
         } else {
-            history.push({
-                "t": now,
-                "cp": primaryPct,
-                "cw": weeklyPct
-            });
+            var point = { "t": now };
+            if (sessionIsAvailable)
+                point.cp = sessionPct;
+
+            if (weeklyIsAvailable)
+                point.cw = weeklyPct;
+
+            history.push(point);
         }
         if (history.length > root.historyLimit)
             history = history.slice(history.length - root.historyLimit);
@@ -1251,8 +1270,8 @@ PlasmoidItem {
         root.sessionCountdown = root.formatCountdown(root.sessionResetDate);
         root.weeklyCountdown = root.formatCountdown(root.weeklyResetDate);
         root.antigravityCountdown = root.formatCountdown(root.antigravityResetDate);
-        root.codexPrimaryCountdown = root.formatCountdown(root.codexPrimaryResetDate);
-        root.codexSecondaryCountdown = root.formatCountdown(root.codexSecondaryResetDate);
+        root.codexSessionCountdown = root.formatCountdown(root.codexSessionResetDate);
+        root.codexWeeklyCountdown = root.formatCountdown(root.codexWeeklyResetDate);
         root.kiroCountdown = root.formatCountdown(root.kiroResetDate);
         root.zaiTokenCountdown = root.formatCountdown(root.zaiTokenResetDate);
         root.zaiToolsCountdown = root.formatCountdown(root.zaiToolsResetDate);
@@ -1578,10 +1597,74 @@ PlasmoidItem {
     }
 
     // ── Codex / ChatGPT-plan usage ────────────────────────────────────────────
-    // Uses the Codex OAuth access token to read the plan's rolling rate-limit
-    // windows (5-hour + weekly). This is what "messages remaining" maps to for a
-    // ChatGPT-plan login; it's separate from OpenAI API org billing.
+    // Uses the local Codex app-server first, with the authenticated web endpoint
+    // retained as a fallback. This is separate from OpenAI API org billing.
+    function normalizedResetDate(resetAt) {
+        if (resetAt === null || resetAt === undefined || resetAt === "")
+            return null;
+
+        var date = new Date(resetAt);
+        return isNaN(date.getTime()) ? null : date;
+    }
+
+    function applyCodexUsage(payload) {
+        var normalized = UsageWindows.normalizeCodex(payload);
+        root.codexSessionAvailable = normalized.session.available;
+        root.codexSessionPct = normalized.session.pct;
+        root.codexSessionResetDate = root.normalizedResetDate(normalized.session.resetAt);
+        root.codexWeeklyAvailable = normalized.weekly.available;
+        root.codexWeeklyPct = normalized.weekly.pct;
+        root.codexWeeklyResetDate = root.normalizedResetDate(normalized.weekly.resetAt);
+        root.codexUsageAvailable = root.codexSessionAvailable || root.codexWeeklyAvailable;
+
+        var main = payload.rateLimits || payload.rate_limit || {};
+        if (main.planType)
+            root.openaiPlanType = main.planType;
+        else if (payload.plan_type)
+            root.openaiPlanType = payload.plan_type;
+
+        root.codexLimitReached = main.limit_reached === true || (main.rateLimitReachedType !== null && main.rateLimitReachedType !== undefined);
+        var parsedAdditional = [];
+        for (var i = 0; i < normalized.additional.length; i++) {
+            var entry = normalized.additional[i];
+            parsedAdditional.push({
+                "name": entry.name,
+                "session": {
+                    "available": entry.session.available,
+                    "pct": entry.session.pct,
+                    "reset": root.normalizedResetDate(entry.session.resetAt)
+                },
+                "weekly": {
+                    "available": entry.weekly.available,
+                    "pct": entry.weekly.pct,
+                    "reset": root.normalizedResetDate(entry.weekly.resetAt)
+                },
+                "limit_reached": entry.limitReached
+            });
+        }
+        root.codexAdditionalLimits = parsedAdditional;
+        root.updateCountdowns();
+
+        if (root.codexUsageAvailable) {
+            root.recordCodexUsage(root.codexSessionPct, root.codexWeeklyPct, root.codexSessionAvailable, root.codexWeeklyAvailable);
+            root.errorMsg = "";
+            root.stale = false;
+            root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
+        }
+
+        return root.codexUsageAvailable;
+    }
+
     function fetchCodexUsage() {
+        if (!root.openaiCodexLoggedIn)
+            return ;
+
+        var cmd = root.scriptPath("get-codex-rate-limits");
+        codexUsageSource.disconnectSource(cmd);
+        codexUsageSource.connectSource(cmd);
+    }
+
+    function fetchCodexUsageFromWeb() {
         if (!root._openaiAccessToken)
             return ;
 
@@ -1603,55 +1686,17 @@ PlasmoidItem {
             if (xhr.status !== 200) {
                 // Don't surface as a hard error — account status still shows.
                 root.codexUsageAvailable = false;
+                root.codexSessionAvailable = false;
+                root.codexWeeklyAvailable = false;
                 return ;
             }
             try {
                 var d = JSON.parse(xhr.responseText);
-                if (d.plan_type)
-                    root.openaiPlanType = d.plan_type;
-
-                var rl = d.rate_limit || {
-                };
-                var pw = rl.primary_window || {
-                };
-                var sw = rl.secondary_window || {
-                };
-                root.codexPrimaryPct = pw.used_percent || 0;
-                root.codexSecondaryPct = sw.used_percent || 0;
-                root.codexLimitReached = rl.limit_reached === true;
-                root.codexPrimaryResetDate = pw.reset_at ? new Date(pw.reset_at * 1000) : null;
-                root.codexSecondaryResetDate = sw.reset_at ? new Date(sw.reset_at * 1000) : null;
-                root.codexUsageAvailable = (rl.primary_window !== undefined || rl.secondary_window !== undefined);
-                // Parse per-model additional rate limits
-                var addl = d.additional_rate_limits || [];
-                var parsedAddl = [];
-                for (var i = 0; i < addl.length; i++) {
-                    var entry = addl[i];
-                    var erl = entry.rate_limit || {
-                    };
-                    var epw = erl.primary_window || {
-                    };
-                    var esw = erl.secondary_window || {
-                    };
-                    parsedAddl.push({
-                        "name": entry.limit_name || ("Model " + (i + 1)),
-                        "primary_pct": epw.used_percent || 0,
-                        "primary_reset": epw.reset_at ? new Date(epw.reset_at * 1000) : null,
-                        "secondary_pct": esw.used_percent || 0,
-                        "secondary_reset": esw.reset_at ? new Date(esw.reset_at * 1000) : null,
-                        "limit_reached": erl.limit_reached === true
-                    });
-                }
-                root.codexAdditionalLimits = parsedAddl;
-                root.updateCountdowns();
-                root.errorMsg = "";
-                root.stale = false;
-                root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
-                if (root.codexUsageAvailable)
-                    root.recordCodexUsage(root.codexPrimaryPct, root.codexSecondaryPct);
-
+                root.applyCodexUsage(d);
             } catch (e) {
                 root.codexUsageAvailable = false;
+                root.codexSessionAvailable = false;
+                root.codexWeeklyAvailable = false;
             }
         };
         xhr.send();
@@ -2260,6 +2305,27 @@ PlasmoidItem {
                 root.openaiTotalOutputTokens = 0;
                 root.errorMsg = "OpenAI: no API key or Codex login";
                 root.stale = root.lastUpdate !== "";
+            }
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: codexUsageSource
+
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(src, data) {
+            disconnectSource(src);
+            if (root.enabledTabs[root.activeTab] !== "openai" && !root.panelShows("openai"))
+                return ;
+
+            try {
+                var payload = JSON.parse((data["stdout"] || "").trim() || "{}");
+                if (!root.applyCodexUsage(payload))
+                    root.fetchCodexUsageFromWeb();
+
+            } catch (_) {
+                root.fetchCodexUsageFromWeb();
             }
         }
     }
