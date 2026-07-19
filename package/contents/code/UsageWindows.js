@@ -114,8 +114,32 @@ function normalizeClaude(payload) {
     return result;
 }
 
+function chartChoices(provider, sessionAvailable, weeklyAvailable) {
+    var result = [];
+    if (sessionAvailable) {
+        result.push({
+            id: provider === "openai" ? "codex_primary" : "session",
+            label: "5H"
+        });
+        result.push({
+            id: provider === "openai" ? "codex_day" : "day",
+            label: "24H"
+        });
+    }
+
+    if (weeklyAvailable) {
+        result.push({
+            id: provider === "openai" ? "codex_weekly" : "weekly",
+            label: "7D"
+        });
+    }
+
+    return result;
+}
+
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
+        chartChoices: chartChoices,
         normalizeClaude: normalizeClaude,
         normalizeCodex: normalizeCodex
     };

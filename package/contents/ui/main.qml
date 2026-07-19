@@ -588,6 +588,26 @@ PlasmoidItem {
         return "weekly";
     }
 
+    function ensureAvailableChartWindow(provider, sessionIsAvailable, weeklyIsAvailable) {
+        if (root.enabledTabs[root.activeTab] !== provider)
+            return ;
+
+        var choices = UsageWindows.chartChoices(provider, sessionIsAvailable, weeklyIsAvailable);
+        if (choices.length === 0)
+            return ;
+
+        for (var i = 0; i < choices.length; i++) {
+            if (choices[i].id === root.chartWindow)
+                return ;
+        }
+
+        var fallback = weeklyIsAvailable ? choices[choices.length - 1] : choices[0];
+        root.chartWindow = fallback.id;
+        root.chartGranularity = root._windowGranularity(fallback.id);
+        Plasmoid.configuration.chartWindow = root.chartWindow;
+        Plasmoid.configuration.chartGranularity = root.chartGranularity;
+    }
+
     function _historyKey() {
         if (root.chartWindow === "session" || root.chartWindow === "day")
             return "s";
@@ -1412,6 +1432,7 @@ PlasmoidItem {
                     root.sessionResetTime = root.sessionResetDate ? Qt.formatTime(root.sessionResetDate, "hh:mm") : "";
                     root.weeklyResetDate = root.normalizedResetDate(normalized.weekly.resetAt);
                     root.weeklyResetTime = root.weeklyResetDate ? Qt.formatDateTime(root.weeklyResetDate, "MMM d, hh:mm") : "";
+                    root.ensureAvailableChartWindow("claude", root.sessionAvailable, root.weeklyAvailable);
                     root.updateCountdowns();
                     root.errorMsg = "";
                     root.stale = false;
@@ -1625,6 +1646,7 @@ PlasmoidItem {
         root.codexWeeklyPct = normalized.weekly.pct;
         root.codexWeeklyResetDate = root.normalizedResetDate(normalized.weekly.resetAt);
         root.codexUsageAvailable = root.codexSessionAvailable || root.codexWeeklyAvailable;
+        root.ensureAvailableChartWindow("openai", root.codexSessionAvailable, root.codexWeeklyAvailable);
 
         var main = payload.rateLimits || payload.rate_limit || {};
         if (main.planType)
@@ -1825,11 +1847,15 @@ PlasmoidItem {
         if (tab === "claude") {
             var fCountdown = root.sessionCountdown === "resetting..." ? " · resetting..." : (root.sessionCountdown ? " (" + root.sessionCountdown + ")" : "");
             var sCountdown = root.weeklyCountdown === "resetting..." ? " · resetting..." : (root.weeklyCountdown ? " (" + root.weeklyCountdown + ")" : "");
-            lines.push("Claude 5H: " + Math.round(root.sessionPct) + "%" + fCountdown);
-            if (root.sessionTokenLimit > 0)
-                lines.push("  " + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) + " tokens");
+            if (root.sessionAvailable) {
+                lines.push("Claude 5H: " + Math.round(root.sessionPct) + "%" + fCountdown);
+                if (root.sessionTokenLimit > 0)
+                    lines.push("  " + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) + " tokens");
 
-            lines.push("Claude 7D: " + Math.round(root.weeklyPct) + "%" + sCountdown);
+            }
+
+            if (root.weeklyAvailable)
+                lines.push("Claude 7D: " + Math.round(root.weeklyPct) + "%" + sCountdown);
             if (root.claudeExtraTokens > 0)
                 lines.push("Extra budget: " + root.formatTokens(root.claudeExtraTokens) + " tokens left");
 
@@ -1860,10 +1886,11 @@ PlasmoidItem {
             if (root.openaiCodexLoggedIn)
                 lines.push("Codex: signed in" + (root.openaiEmail ? " as " + root.openaiEmail : ""));
 
-            if (root.codexUsageAvailable) {
-                lines.push("Codex 5H left: " + Math.round(100 - root.codexPrimaryPct) + "%" + (root.codexPrimaryCountdown ? " (resets in " + root.codexPrimaryCountdown + ")" : ""));
-                lines.push("Codex weekly left: " + Math.round(100 - root.codexSecondaryPct) + "%");
-            }
+            if (root.codexSessionAvailable)
+                lines.push("Codex 5H left: " + Math.round(100 - root.codexSessionPct) + "%" + (root.codexSessionCountdown ? " (resets in " + root.codexSessionCountdown + ")" : ""));
+
+            if (root.codexWeeklyAvailable)
+                lines.push("Codex weekly left: " + Math.round(100 - root.codexWeeklyPct) + "%" + (root.codexWeeklyCountdown ? " (resets in " + root.codexWeeklyCountdown + ")" : ""));
             if (root.openaiPlanType)
                 lines.push("Plan: " + root.openaiPlanType);
 
@@ -2783,12 +2810,12 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconText: "C"
                 stale: root.stale && root.panelShows("claude")
-                visible: root.panelShows("claude")
+                visible: root.panelShows("claude") && root.sessionAvailable
                 tooltipText: "Claude 5-hour: " + Math.round(root.sessionPct) + "%" + (root.sessionTokenLimit > 0 ? "\n" + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) : "")
             }
 
             Rectangle {
-                visible: root.panelShows("claude")
+                visible: root.panelShows("claude") && root.sessionAvailable && root.weeklyAvailable
                 width: 1
                 height: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
@@ -2801,7 +2828,7 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconText: "7D"
                 stale: root.stale && root.panelShows("claude")
-                visible: root.panelShows("claude")
+                visible: root.panelShows("claude") && root.weeklyAvailable
                 tooltipText: "Claude 7-day: " + Math.round(root.weeklyPct) + "%" + (root.weeklyTokenLimit > 0 ? "\n" + root.formatTokens(root.weeklyTokensUsed) + " / " + root.formatTokens(root.weeklyTokenLimit) : "")
             }
 
@@ -2834,21 +2861,20 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                // When Codex plan usage is available (and no API cost to show), surface the
-                // 5-hour window % so the panel reflects "messages left" at a glance.
-                pct: root.codexUsageAvailable ? root.codexPrimaryPct : (root.openaiTotalCostUSD > 0 ? Math.min(100, (root.openaiTotalCostUSD / 10) * 100) : 0)
+                // Preserve the existing API-cost fallback when no plan limit is available.
+                pct: root.codexSessionAvailable ? root.codexSessionPct : (root.openaiTotalCostUSD > 0 ? Math.min(100, (root.openaiTotalCostUSD / 10) * 100) : 0)
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconText: "O"
                 stale: root.stale && root.panelShows("openai")
-                visible: root.panelShows("openai")
+                visible: root.panelShows("openai") && (root.codexSessionAvailable || !root.codexUsageAvailable)
                 showCost: !root.codexUsageAvailable
                 costText: root.openaiTotalCostUSD > 0 ? "$" + root.openaiTotalCostUSD.toFixed(2) : (root._openaiApiKey ? "API" : (root.openaiCodexLoggedIn ? "Codex" : "—"))
-                tooltipText: "OpenAI" + (root.codexUsageAvailable ? "\nCodex 5h: " + Math.round(100 - root.codexPrimaryPct) + "% left  ·  weekly: " + Math.round(100 - root.codexSecondaryPct) + "% left" : "") + (root._openaiApiKey ? "\nAPI usage configured\nCost (30d): $" + root.openaiTotalCostUSD.toFixed(2) + "\nIn: " + root.formatTokens(root.openaiTotalInputTokens) + "  Out: " + root.formatTokens(root.openaiTotalOutputTokens) : "\nAPI usage needs an OpenAI API key") + (root.openaiCodexLoggedIn ? "\nCodex signed in" + (root.openaiEmail ? ": " + root.openaiEmail : "") : "")
+                tooltipText: "OpenAI" + (root.codexSessionAvailable ? "\nCodex 5h: " + Math.round(100 - root.codexSessionPct) + "% left" : "") + (root.codexWeeklyAvailable ? "\nCodex weekly: " + Math.round(100 - root.codexWeeklyPct) + "% left" : "") + (root._openaiApiKey ? "\nAPI usage configured\nCost (30d): $" + root.openaiTotalCostUSD.toFixed(2) + "\nIn: " + root.formatTokens(root.openaiTotalInputTokens) + "  Out: " + root.formatTokens(root.openaiTotalOutputTokens) : "\nAPI usage needs an OpenAI API key") + (root.openaiCodexLoggedIn ? "\nCodex signed in" + (root.openaiEmail ? ": " + root.openaiEmail : "") : "")
             }
 
             Rectangle {
-                visible: root.panelShows("openai") && root.codexUsageAvailable
+                visible: root.panelShows("openai") && root.codexSessionAvailable && root.codexWeeklyAvailable
                 width: 1
                 height: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
@@ -2856,14 +2882,14 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                pct: root.codexSecondaryPct
+                pct: root.codexWeeklyPct
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconText: "7D"
                 stale: root.stale && root.panelShows("openai")
-                visible: root.panelShows("openai") && root.codexUsageAvailable
+                visible: root.panelShows("openai") && root.codexWeeklyAvailable
                 showCost: false
-                tooltipText: "OpenAI Codex weekly: " + Math.round(100 - root.codexSecondaryPct) + "% left"
+                tooltipText: "OpenAI Codex weekly: " + Math.round(100 - root.codexWeeklyPct) + "% left"
             }
 
             PanelSlot {

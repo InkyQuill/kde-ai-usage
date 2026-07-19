@@ -138,6 +138,7 @@ ColumnLayout {
     }
 
     PopupRow {
+        visible: rootItem.sessionAvailable
         label: "5 Hours"
         resetText: rootItem.sessionResetTime ? "resets " + rootItem.sessionResetTime : ""
         countdownText: rootItem.sessionCountdown === "resetting..." ? "resetting..." : (rootItem.sessionCountdown ? "in " + rootItem.sessionCountdown : "")
@@ -150,6 +151,7 @@ ColumnLayout {
     }
 
     PopupRow {
+        visible: rootItem.weeklyAvailable
         label: "7 Days"
         resetText: rootItem.weeklyResetTime ? "resets " + rootItem.weeklyResetTime : ""
         countdownText: rootItem.weeklyCountdown === "resetting..." ? "resetting..." : (rootItem.weeklyCountdown ? "in " + rootItem.weeklyCountdown : "")

@@ -90,3 +90,17 @@ test("normalizes app-server named limits and ignores unknown durations", () => {
     assert.equal(result.additional.length, 1);
     assert.equal(result.additional[0].weekly.pct, 9);
 });
+
+test("offers only weekly charts for weekly-only Codex", () => {
+    assert.deepEqual(UsageWindows.chartChoices("openai", false, true), [
+        { id: "codex_weekly", label: "7D" }
+    ]);
+});
+
+test("offers session day and weekly charts when both windows exist", () => {
+    assert.deepEqual(UsageWindows.chartChoices("claude", true, true), [
+        { id: "session", label: "5H" },
+        { id: "day", label: "24H" },
+        { id: "weekly", label: "7D" }
+    ]);
+});

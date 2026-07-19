@@ -74,24 +74,26 @@ ColumnLayout {
             spacing: 12
 
             PopupRow {
+                visible: rootItem.codexSessionAvailable
                 label: "5 Hours"
-                countdownText: rootItem.codexPrimaryCountdown === "resetting..." ? "resetting..." : (rootItem.codexPrimaryCountdown ? "in " + rootItem.codexPrimaryCountdown : "")
-                value: rootItem.codexPrimaryPct
+                countdownText: rootItem.codexSessionCountdown === "resetting..." ? "resetting..." : (rootItem.codexSessionCountdown ? "in " + rootItem.codexSessionCountdown : "")
+                value: rootItem.codexSessionPct
                 barColor: rootItem.openaiGreen
-                etaText: rootItem.usageHistory.length >= 0 ? rootItem.etaToFull("cp", rootItem.codexPrimaryPct) : ""
-                deltaText: rootItem.usageHistory.length >= 0 ? rootItem.periodDelta("cp", rootItem.codexPrimaryPct, 5 * 3600000, "last 5h") : ""
-                tokenText: Math.round(100 - rootItem.codexPrimaryPct) + "% of messages left"
-                tooltipText: "Codex 5-hour limit\nUsed: " + Math.round(rootItem.codexPrimaryPct) + "%  ·  " + Math.round(100 - rootItem.codexPrimaryPct) + "% left"
+                etaText: rootItem.usageHistory.length >= 0 ? rootItem.etaToFull("cp", rootItem.codexSessionPct) : ""
+                deltaText: rootItem.usageHistory.length >= 0 ? rootItem.periodDelta("cp", rootItem.codexSessionPct, 5 * 3600000, "last 5h") : ""
+                tokenText: Math.round(100 - rootItem.codexSessionPct) + "% of messages left"
+                tooltipText: "Codex 5-hour limit\nUsed: " + Math.round(rootItem.codexSessionPct) + "%  ·  " + Math.round(100 - rootItem.codexSessionPct) + "% left"
             }
             PopupRow {
+                visible: rootItem.codexWeeklyAvailable
                 label: "Weekly"
-                countdownText: rootItem.codexSecondaryCountdown === "resetting..." ? "resetting..." : (rootItem.codexSecondaryCountdown ? "in " + rootItem.codexSecondaryCountdown : "")
-                value: rootItem.codexSecondaryPct
+                countdownText: rootItem.codexWeeklyCountdown === "resetting..." ? "resetting..." : (rootItem.codexWeeklyCountdown ? "in " + rootItem.codexWeeklyCountdown : "")
+                value: rootItem.codexWeeklyPct
                 barColor: rootItem.openaiGreen
-                etaText: rootItem.usageHistory.length >= 0 ? rootItem.etaToFull("cw", rootItem.codexSecondaryPct) : ""
-                deltaText: rootItem.usageHistory.length >= 0 ? rootItem.periodDelta("cw", rootItem.codexSecondaryPct, 7 * 24 * 3600000, "last week") : ""
-                tokenText: Math.round(100 - rootItem.codexSecondaryPct) + "% of messages left"
-                tooltipText: "Codex weekly limit\nUsed: " + Math.round(rootItem.codexSecondaryPct) + "%  ·  " + Math.round(100 - rootItem.codexSecondaryPct) + "% left"
+                etaText: rootItem.usageHistory.length >= 0 ? rootItem.etaToFull("cw", rootItem.codexWeeklyPct) : ""
+                deltaText: rootItem.usageHistory.length >= 0 ? rootItem.periodDelta("cw", rootItem.codexWeeklyPct, 7 * 24 * 3600000, "last week") : ""
+                tokenText: Math.round(100 - rootItem.codexWeeklyPct) + "% of messages left"
+                tooltipText: "Codex weekly limit\nUsed: " + Math.round(rootItem.codexWeeklyPct) + "%  ·  " + Math.round(100 - rootItem.codexWeeklyPct) + "% left"
             }
 
             PlasmaComponents.Label {
@@ -141,30 +143,32 @@ ColumnLayout {
                     }
 
                     PopupRow {
+                        visible: modelData.session.available
                         label: "5 Hours"
                         countdownText: {
-                            if (!modelData.primary_reset)
+                            if (!modelData.session.reset)
                                 return "";
-                            var cd = rootItem.formatCountdown(modelData.primary_reset);
+                            var cd = rootItem.formatCountdown(modelData.session.reset);
                             return cd === "resetting..." ? "resetting..." : (cd ? "in " + cd : "");
                         }
-                        value: modelData.primary_pct
+                        value: modelData.session.pct
                         barColor: rootItem.openaiGreen
-                        tokenText: Math.round(100 - modelData.primary_pct) + "% of messages left"
-                        tooltipText: modelData.name + " 5-hour limit\nUsed: " + Math.round(modelData.primary_pct) + "%  ·  " + Math.round(100 - modelData.primary_pct) + "% left"
+                        tokenText: Math.round(100 - modelData.session.pct) + "% of messages left"
+                        tooltipText: modelData.name + " 5-hour limit\nUsed: " + Math.round(modelData.session.pct) + "%  ·  " + Math.round(100 - modelData.session.pct) + "% left"
                     }
                     PopupRow {
+                        visible: modelData.weekly.available
                         label: "Weekly"
                         countdownText: {
-                            if (!modelData.secondary_reset)
+                            if (!modelData.weekly.reset)
                                 return "";
-                            var cd = rootItem.formatCountdown(modelData.secondary_reset);
+                            var cd = rootItem.formatCountdown(modelData.weekly.reset);
                             return cd === "resetting..." ? "resetting..." : (cd ? "in " + cd : "");
                         }
-                        value: modelData.secondary_pct
+                        value: modelData.weekly.pct
                         barColor: rootItem.openaiGreen
-                        tokenText: Math.round(100 - modelData.secondary_pct) + "% of messages left"
-                        tooltipText: modelData.name + " weekly limit\nUsed: " + Math.round(modelData.secondary_pct) + "%  ·  " + Math.round(100 - modelData.secondary_pct) + "% left"
+                        tokenText: Math.round(100 - modelData.weekly.pct) + "% of messages left"
+                        tooltipText: modelData.name + " weekly limit\nUsed: " + Math.round(modelData.weekly.pct) + "%  ·  " + Math.round(100 - modelData.weekly.pct) + "% left"
                     }
                 }
             }
