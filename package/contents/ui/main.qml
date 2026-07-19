@@ -693,20 +693,27 @@ PlasmoidItem {
         root.autoloadHistory();
     }
 
-    function recordUsage(sessionPct, weeklyPct) {
+    function recordUsage(sessionPct, weeklyPct, sessionIsAvailable, weeklyIsAvailable) {
         var history = root.usageHistory.slice();
         var now = new Date().getTime();
         if (history.length > 0 && now - history[history.length - 1].t < 60000) {
             var last = history[history.length - 1];
-            last.s = sessionPct;
-            last.w = weeklyPct;
+            if (sessionIsAvailable)
+                last.s = sessionPct;
+
+            if (weeklyIsAvailable)
+                last.w = weeklyPct;
+
             history[history.length - 1] = last;
         } else {
-            history.push({
-                "t": now,
-                "s": sessionPct,
-                "w": weeklyPct
-            });
+            var point = { "t": now };
+            if (sessionIsAvailable)
+                point.s = sessionPct;
+
+            if (weeklyIsAvailable)
+                point.w = weeklyPct;
+
+            history.push(point);
         }
         if (history.length > root.historyLimit)
             history = history.slice(history.length - root.historyLimit);
@@ -1378,14 +1385,17 @@ PlasmoidItem {
             if (xhr.status === 200) {
                 try {
                     var d = JSON.parse(xhr.responseText);
+                    var normalized = UsageWindows.normalizeClaude(d);
                     var f = d.five_hour || {
                     };
                     var s = d.seven_day || {
                     };
-                    root.sessionPct = f.utilization || 0;
+                    root.sessionAvailable = normalized.session.available;
+                    root.sessionPct = normalized.session.pct;
                     root.sessionTokensUsed = f.tokens_used || 0;
                     root.sessionTokenLimit = f.token_limit || 0;
-                    root.weeklyPct = s.utilization || 0;
+                    root.weeklyAvailable = normalized.weekly.available;
+                    root.weeklyPct = normalized.weekly.pct;
                     root.weeklyTokensUsed = s.tokens_used || 0;
                     root.weeklyTokenLimit = s.token_limit || 0;
                     var extra = d.extra || d.extra_budget || {
@@ -1398,19 +1408,18 @@ PlasmoidItem {
                     root.claudeExtraUsageUsed = extraUsage.used_credits || 0;
                     root.claudeExtraUsagePct = extraUsage.utilization || 0;
                     root.claudeExtraUsageCurrency = extraUsage.currency || "USD";
-                    var fReset = new Date(f.resets_at || "");
-                    root.sessionResetDate = !isNaN(fReset.getTime()) ? fReset : null;
-                    root.sessionResetTime = !isNaN(fReset.getTime()) ? Qt.formatTime(fReset, "hh:mm") : "";
-                    var sReset = new Date(s.resets_at || "");
-                    root.weeklyResetDate = !isNaN(sReset.getTime()) ? sReset : null;
-                    root.weeklyResetTime = !isNaN(sReset.getTime()) ? Qt.formatDateTime(sReset, "MMM d, hh:mm") : "";
+                    root.sessionResetDate = root.normalizedResetDate(normalized.session.resetAt);
+                    root.sessionResetTime = root.sessionResetDate ? Qt.formatTime(root.sessionResetDate, "hh:mm") : "";
+                    root.weeklyResetDate = root.normalizedResetDate(normalized.weekly.resetAt);
+                    root.weeklyResetTime = root.weeklyResetDate ? Qt.formatDateTime(root.weeklyResetDate, "MMM d, hh:mm") : "";
                     root.updateCountdowns();
                     root.errorMsg = "";
                     root.stale = false;
                     root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
                     root._offline = false;
                     offlineRetryTimer.stop();
-                    root.recordUsage(root.sessionPct, root.weeklyPct);
+                    if (root.sessionAvailable || root.weeklyAvailable)
+                        root.recordUsage(root.sessionPct, root.weeklyPct, root.sessionAvailable, root.weeklyAvailable);
                 } catch (_) {
                     root.errorMsg = "parse error";
                     root.stale = root.lastUpdate !== "";
@@ -2123,6 +2132,8 @@ PlasmoidItem {
                     fetchClaudeApiUsage();
 
             } else if (root._claudeAdminToken) {
+                root.sessionAvailable = false;
+                root.weeklyAvailable = false;
                 root.sessionPct = 0;
                 root.weeklyPct = 0;
                 root.sessionTokenLimit = 0;
@@ -2130,6 +2141,8 @@ PlasmoidItem {
                 fetchClaudeApiUsage();
                 root.errorMsg = "OAuth missing — API stats only";
             } else {
+                root.sessionAvailable = false;
+                root.weeklyAvailable = false;
                 root.errorMsg = "Claude not logged in";
             }
         }

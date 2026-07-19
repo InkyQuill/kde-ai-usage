@@ -38,6 +38,17 @@ test("rejects inactive and nonnumeric Claude placeholders", () => {
     assert.equal(result.weekly.available, false);
 });
 
+test("prefers active Claude semantic entries over legacy values", () => {
+    const result = UsageWindows.normalizeClaude({
+        limits: [
+            { group: "session", kind: "session", is_active: true, percent: 31, resets_at: "new-reset" }
+        ],
+        five_hour: { utilization: 99, resets_at: "old-reset" }
+    });
+
+    assert.deepEqual(result.session, { available: true, pct: 31, resetAt: "new-reset" });
+});
+
 test("normalizes a weekly-only Codex app-server snapshot", () => {
     const result = UsageWindows.normalizeCodex({
         rateLimits: {
