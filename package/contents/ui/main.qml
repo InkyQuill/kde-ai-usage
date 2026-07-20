@@ -6,6 +6,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.plasma5support as Plasma5Support
 import org.kde.plasma.plasmoid
+import "../code/UsageWindows.js" as UsageWindows
 
 PlasmoidItem {
     // GPT-4o family
@@ -107,12 +108,14 @@ PlasmoidItem {
     readonly property var claudeApiStatusIncidents: claudeStatus.incidents
     readonly property string claudeApiStatusLatestUpdate: claudeStatus.latestUpdate
     // ── Claude data ───────────────────────────────────────────────────────────
+    property bool sessionAvailable: false
     property real sessionPct: 0
     property real sessionTokensUsed: 0
     property real sessionTokenLimit: 0
     property string sessionResetTime: ""
     property var sessionResetDate: null
     property string sessionCountdown: ""
+    property bool weeklyAvailable: false
     property real weeklyPct: 0
     property real weeklyTokensUsed: 0
     property real weeklyTokenLimit: 0
@@ -138,7 +141,7 @@ PlasmoidItem {
     property real claudeTotalInputTokens: 0
     property real claudeTotalOutputTokens: 0
 
-    // ── Claude Code local activity stats (from ~/.claude/stats-cache.json) ─────
+    // Claude Code local activity stats (mirrors ~/.claude/stats-cache.json).
     property bool claudeStatsAvailable: false
     property int claudeStatsVersion: 0
     property real claudeStatsTotalMessages: 0
@@ -168,7 +171,8 @@ PlasmoidItem {
     property real antigravityPromptCreditsAvailable: 0
     property string _antigravityToken: ""
     property string _antigravityProjectId: ""
-    property var antigravityModels: ({})
+    property var antigravityModels: ({
+    })
     property var antigravityGroups: []
     // ── OpenAI data ───────────────────────────────────────────────────────────
     property string _openaiApiKey: ""
@@ -202,15 +206,24 @@ PlasmoidItem {
     property string kiroResetTime: ""
     property var kiroResetDate: null
     property string kiroCountdown: ""
-    // ── Codex / ChatGPT-plan usage (from chatgpt.com/backend-api/codex/usage) ──
-    // Two rolling windows like Claude: primary = 5-hour, secondary = weekly.
+    // ── Codex / ChatGPT-plan usage ────────────────────────────────────────────
+    // Windows are classified by their actual duration, never by response order.
     property bool codexUsageAvailable: false
-    property real codexPrimaryPct: 0 // 5-hour window used %
-    property var codexPrimaryResetDate: null
-    property string codexPrimaryCountdown: ""
-    property real codexSecondaryPct: 0 // weekly window used %
-    property var codexSecondaryResetDate: null
-    property string codexSecondaryCountdown: ""
+    property bool codexSessionAvailable: false
+    property real codexSessionPct: 0
+    property var codexSessionResetDate: null
+    property string codexSessionCountdown: ""
+    property bool codexWeeklyAvailable: false
+    property real codexWeeklyPct: 0
+    property var codexWeeklyResetDate: null
+    property string codexWeeklyCountdown: ""
+    // Deprecated compatibility aliases. Keep these until five-hour windows return.
+    readonly property real codexPrimaryPct: root.codexSessionPct
+    readonly property var codexPrimaryResetDate: root.codexSessionResetDate
+    readonly property string codexPrimaryCountdown: root.codexSessionCountdown
+    readonly property real codexSecondaryPct: root.codexWeeklyPct
+    readonly property var codexSecondaryResetDate: root.codexWeeklyResetDate
+    readonly property string codexSecondaryCountdown: root.codexWeeklyCountdown
     property bool codexLimitReached: false
     // Per-model additional rate limits (additional_rate_limits[] from the endpoint)
     // Each entry: { name, primary_pct, primary_reset, primary_countdown, secondary_pct, secondary_reset, secondary_countdown }
@@ -594,6 +607,26 @@ PlasmoidItem {
         return "weekly";
     }
 
+    function ensureAvailableChartWindow(provider, sessionIsAvailable, weeklyIsAvailable) {
+        if (root.enabledTabs[root.activeTab] !== provider)
+            return ;
+
+        var choices = UsageWindows.chartChoices(provider, sessionIsAvailable, weeklyIsAvailable);
+        if (choices.length === 0)
+            return ;
+
+        for (var i = 0; i < choices.length; i++) {
+            if (choices[i].id === root.chartWindow)
+                return ;
+        }
+
+        var fallback = weeklyIsAvailable ? choices[choices.length - 1] : choices[0];
+        root.chartWindow = fallback.id;
+        root.chartGranularity = root._windowGranularity(fallback.id);
+        Plasmoid.configuration.chartWindow = root.chartWindow;
+        Plasmoid.configuration.chartGranularity = root.chartGranularity;
+    }
+
     function _historyKey() {
         if (root.chartWindow === "session" || root.chartWindow === "day")
             return "s";
@@ -699,20 +732,27 @@ PlasmoidItem {
         root.autoloadHistory();
     }
 
-    function recordUsage(sessionPct, weeklyPct) {
+    function recordUsage(sessionPct, weeklyPct, sessionIsAvailable, weeklyIsAvailable) {
         var history = root.usageHistory.slice();
         var now = new Date().getTime();
         if (history.length > 0 && now - history[history.length - 1].t < 60000) {
             var last = history[history.length - 1];
-            last.s = sessionPct;
-            last.w = weeklyPct;
+            if (sessionIsAvailable)
+                last.s = sessionPct;
+
+            if (weeklyIsAvailable)
+                last.w = weeklyPct;
+
             history[history.length - 1] = last;
         } else {
-            history.push({
-                "t": now,
-                "s": sessionPct,
-                "w": weeklyPct
-            });
+            var point = { "t": now };
+            if (sessionIsAvailable)
+                point.s = sessionPct;
+
+            if (weeklyIsAvailable)
+                point.w = weeklyPct;
+
+            history.push(point);
         }
         if (history.length > root.historyLimit)
             history = history.slice(history.length - root.historyLimit);
@@ -893,21 +933,28 @@ PlasmoidItem {
     // Merge Codex windows into the most recent history point (or create one).
     // Called after fetchCodexUsage() succeeds, separate from recordUsage() since
     // Claude and Codex refresh on different tabs at different times.
-    function recordCodexUsage(primaryPct, weeklyPct) {
+    function recordCodexUsage(sessionPct, weeklyPct, sessionIsAvailable, weeklyIsAvailable) {
         var history = root.usageHistory.slice();
         var now = new Date().getTime();
         // If the last point is recent (<2 min), just patch it in-place.
         if (history.length > 0 && now - history[history.length - 1].t < 120000) {
             var last = history[history.length - 1];
-            last.cp = primaryPct;
-            last.cw = weeklyPct;
+            if (sessionIsAvailable)
+                last.cp = sessionPct;
+
+            if (weeklyIsAvailable)
+                last.cw = weeklyPct;
+
             history[history.length - 1] = last;
         } else {
-            history.push({
-                "t": now,
-                "cp": primaryPct,
-                "cw": weeklyPct
-            });
+            var point = { "t": now };
+            if (sessionIsAvailable)
+                point.cp = sessionPct;
+
+            if (weeklyIsAvailable)
+                point.cw = weeklyPct;
+
+            history.push(point);
         }
         if (history.length > root.historyLimit)
             history = history.slice(history.length - root.historyLimit);
@@ -1269,12 +1316,76 @@ PlasmoidItem {
         root.sessionCountdown = root.formatCountdown(root.sessionResetDate);
         root.weeklyCountdown = root.formatCountdown(root.weeklyResetDate);
         root.antigravityCountdown = root.formatCountdown(root.antigravityResetDate);
-        root.codexPrimaryCountdown = root.formatCountdown(root.codexPrimaryResetDate);
-        root.codexSecondaryCountdown = root.formatCountdown(root.codexSecondaryResetDate);
+        root.codexSessionCountdown = root.formatCountdown(root.codexSessionResetDate);
+        root.codexWeeklyCountdown = root.formatCountdown(root.codexWeeklyResetDate);
         root.kiroCountdown = root.formatCountdown(root.kiroResetDate);
         root.zaiTokenCountdown = root.formatCountdown(root.zaiTokenResetDate);
         root.zaiToolsCountdown = root.formatCountdown(root.zaiToolsResetDate);
         root.copilotCountdown = root.formatCountdown(root.copilotResetDate);
+    }
+
+    function parseClaudeStats(raw) {
+        root.claudeStatsAvailable = false;
+        if (!raw)
+            return ;
+        try {
+            var s = JSON.parse(raw);
+            root.claudeStatsVersion = s.version || 0;
+            root.claudeStatsTotalMessages = s.totalMessages || 0;
+            root.claudeStatsTotalSessions = s.totalSessions || 0;
+            root.claudeStatsFirstDate = s.firstSessionDate || "";
+            root.claudeStatsComputedDate = s.lastComputedDate || "";
+            root.claudeStatsLongestSessionMs = (s.longestSession && s.longestSession.duration) || 0;
+            var models = {}, total = 0, favorite = "", favoriteTotal = -1;
+            var usage = s.modelUsage || {};
+            for (var id in usage) {
+                var m = usage[id] || {}, input = m.inputTokens || 0, output = m.outputTokens || 0;
+                var modelTotal = input + output;
+                models[id] = { input: input, output: output, cacheRead: m.cacheReadInputTokens || 0, cacheCreation: m.cacheCreationInputTokens || 0, total: modelTotal };
+                total += modelTotal;
+                if (modelTotal > favoriteTotal) { favoriteTotal = modelTotal; favorite = id; }
+            }
+            root.claudeStatsModels = models;
+            root.claudeStatsTotalTokens = total;
+            root.claudeStatsFavoriteModel = favorite;
+            var daily = [], dailySource = s.dailyModelTokens || [];
+            for (var i = 0; i < dailySource.length; i++) {
+                var day = dailySource[i] || {}, byModel = day.tokensByModel || {}, dayTotal = 0;
+                for (var key in byModel) dayTotal += byModel[key] || 0;
+                daily.push({ date: day.date || "", total: dayTotal });
+            }
+            daily.sort(function(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+            root.claudeStatsDailyTokens = daily;
+            var dates = [], activity = s.dailyActivity || [];
+            for (var j = 0; j < activity.length; j++) if (activity[j] && activity[j].date) dates.push(activity[j].date);
+            dates.sort();
+            root.claudeStatsActiveDays = dates.length;
+            root.claudeStatsSpanDays = 0;
+            if (root.claudeStatsFirstDate) {
+                var first = new Date(root.claudeStatsFirstDate);
+                if (!isNaN(first.getTime())) root.claudeStatsSpanDays = Math.max(1, Math.round((Date.now() - first.getTime()) / 86400000) + 1);
+            }
+            var longest = 0, run = 0, previous = null;
+            for (var d = 0; d < dates.length; d++) {
+                var current = new Date(dates[d] + "T00:00:00");
+                run = previous !== null && Math.round((current.getTime() - previous.getTime()) / 86400000) === 1 ? run + 1 : 1;
+                longest = Math.max(longest, run);
+                previous = current;
+            }
+            root.claudeStatsLongestStreak = longest;
+            root.claudeStatsCurrentStreak = 0;
+            if (dates.length) {
+                var last = new Date(dates[dates.length - 1] + "T00:00:00"), today = new Date();
+                today.setHours(0, 0, 0, 0);
+                if (Math.round((today.getTime() - last.getTime()) / 86400000) <= 1) root.claudeStatsCurrentStreak = run;
+            }
+            var hours = s.hourCounts || {}, peak = -1, peakCount = -1;
+            for (var hour in hours) if (hours[hour] > peakCount) { peakCount = hours[hour]; peak = parseInt(hour, 10); }
+            root.claudeStatsPeakHour = peak;
+            root.claudeStatsAvailable = true;
+        } catch (e) {
+            console.log("Claude stats parse error: " + e);
+        }
     }
 
     function usageColor(pct) {
@@ -1291,132 +1402,6 @@ PlasmoidItem {
         return name.replace(/gpt-4o-mini/g, "4o-mini").replace(/gpt-4o/g, "4o").replace(/gpt-4-turbo/g, "4-turbo").replace(/gpt-4-32k/g, "4-32k").replace(/gpt-4/g, "4").replace(/gpt-3\.5-turbo/g, "3.5-turbo").replace(/o1-mini/g, "o1-mini").replace(/o3-mini/g, "o3-mini").replace(/o4-mini/g, "o4-mini").replace(/claude-3-5-/g, "3.5-").replace(/claude-3-/g, "3-").replace(/claude-/g, "").replace(/-\d{8}$/, "").replace(/-20\d{2}-\d{2}-\d{2}$/, "");
     }
 
-    // Parse ~/.claude/stats-cache.json into the claudeStats* properties.
-    // Defensive: every field is optional and derived stats are recomputed here so
-    // the widget stays correct even if Claude Code changes which fields it caches.
-    function parseClaudeStats(raw) {
-        if (!raw) {
-            root.claudeStatsAvailable = false;
-            return;
-        }
-        try {
-            var s = JSON.parse(raw);
-            root.claudeStatsVersion = s.version || 0;
-            root.claudeStatsTotalMessages = s.totalMessages || 0;
-            root.claudeStatsTotalSessions = s.totalSessions || 0;
-            root.claudeStatsFirstDate = s.firstSessionDate || "";
-            root.claudeStatsComputedDate = s.lastComputedDate || "";
-            root.claudeStatsLongestSessionMs = (s.longestSession && s.longestSession.duration) || 0;
-
-            // Per-model token usage + favorite model + grand total.
-            var models = {};
-            var totalTokens = 0;
-            var favModel = "";
-            var favTokens = -1;
-            var mu = s.modelUsage || {};
-            for (var id in mu) {
-                var m = mu[id] || {};
-                var inTok = m.inputTokens || 0;
-                var outTok = m.outputTokens || 0;
-                var tot = inTok + outTok;
-                models[id] = {
-                    input: inTok,
-                    output: outTok,
-                    cacheRead: m.cacheReadInputTokens || 0,
-                    cacheCreation: m.cacheCreationInputTokens || 0,
-                    total: tot
-                };
-                totalTokens += tot;
-                if (tot > favTokens) {
-                    favTokens = tot;
-                    favModel = id;
-                }
-            }
-            root.claudeStatsModels = models;
-            root.claudeStatsTotalTokens = totalTokens;
-            root.claudeStatsFavoriteModel = favModel;
-
-            // Daily token totals (for the sparkline), sorted ascending by date.
-            var daily = [];
-            var dmt = s.dailyModelTokens || [];
-            for (var i = 0; i < dmt.length; i++) {
-                var day = dmt[i] || {};
-                var byModel = day.tokensByModel || {};
-                var dayTot = 0;
-                for (var k in byModel)
-                    dayTot += byModel[k] || 0;
-                daily.push({
-                    date: day.date || "",
-                    total: dayTot
-                });
-            }
-            daily.sort(function (a, b) {
-                return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0);
-            });
-            root.claudeStatsDailyTokens = daily;
-
-            // Active days + streaks from dailyActivity.
-            var act = s.dailyActivity || [];
-            var dates = [];
-            for (var j = 0; j < act.length; j++) {
-                if (act[j] && act[j].date)
-                    dates.push(act[j].date);
-            }
-            dates.sort();
-            root.claudeStatsActiveDays = dates.length;
-
-            // Calendar span since first session (for the "active N/M days" framing).
-            if (root.claudeStatsFirstDate) {
-                var first = new Date(root.claudeStatsFirstDate);
-                if (!isNaN(first.getTime()))
-                    root.claudeStatsSpanDays = Math.max(1, Math.round((Date.now() - first.getTime()) / 86400000) + 1);
-            }
-
-            // Longest + current streak of consecutive calendar days.
-            var longest = 0;
-            var current = 0;
-            var run = 0;
-            var prev = null;
-            for (var d = 0; d < dates.length; d++) {
-                var cur = new Date(dates[d] + "T00:00:00");
-                if (prev !== null && Math.round((cur.getTime() - prev.getTime()) / 86400000) === 1)
-                    run += 1;
-                else
-                    run = 1;
-                if (run > longest)
-                    longest = run;
-                prev = cur;
-            }
-            // Current streak counts only if the last active day is today or yesterday.
-            if (dates.length > 0) {
-                var last = new Date(dates[dates.length - 1] + "T00:00:00");
-                var today = new Date();
-                today.setHours(0, 0, 0, 0);
-                var gap = Math.round((today.getTime() - last.getTime()) / 86400000);
-                current = (gap <= 1) ? run : 0;
-            }
-            root.claudeStatsLongestStreak = longest;
-            root.claudeStatsCurrentStreak = current;
-
-            // Peak activity hour from hourCounts.
-            var hc = s.hourCounts || {};
-            var peakH = -1;
-            var peakC = -1;
-            for (var h in hc) {
-                if (hc[h] > peakC) {
-                    peakC = hc[h];
-                    peakH = parseInt(h, 10);
-                }
-            }
-            root.claudeStatsPeakHour = peakH;
-
-            root.claudeStatsAvailable = true;
-        } catch (e) {
-            console.log("Claude stats parse error: " + e);
-            root.claudeStatsAvailable = false;
-        }
-    }
-
     function loadCreds(tabOverride) {
         var tab = tabOverride || root.enabledTabs[root.activeTab];
         if (tab === "claude") {
@@ -1431,7 +1416,6 @@ PlasmoidItem {
             var settingsCmd = "cat \"$HOME/.claude/settings.json\" 2>/dev/null || echo '{}'";
             claudeSettingsSource.disconnectSource(settingsCmd);
             claudeSettingsSource.connectSource(settingsCmd);
-            // Local activity stats Claude Code surfaces via `/stats`.
             var statsCmd = "cat \"$HOME/.claude/stats-cache.json\" 2>/dev/null || echo ''";
             claudeStatsSource.disconnectSource(statsCmd);
             claudeStatsSource.connectSource(statsCmd);
@@ -1507,14 +1491,17 @@ PlasmoidItem {
             if (xhr.status === 200) {
                 try {
                     var d = JSON.parse(xhr.responseText);
+                    var normalized = UsageWindows.normalizeClaude(d);
                     var f = d.five_hour || {
                     };
                     var s = d.seven_day || {
                     };
-                    root.sessionPct = f.utilization || 0;
+                    root.sessionAvailable = normalized.session.available;
+                    root.sessionPct = normalized.session.pct;
                     root.sessionTokensUsed = f.tokens_used || 0;
                     root.sessionTokenLimit = f.token_limit || 0;
-                    root.weeklyPct = s.utilization || 0;
+                    root.weeklyAvailable = normalized.weekly.available;
+                    root.weeklyPct = normalized.weekly.pct;
                     root.weeklyTokensUsed = s.tokens_used || 0;
                     root.weeklyTokenLimit = s.token_limit || 0;
                     var extra = d.extra || d.extra_budget || {
@@ -1527,19 +1514,19 @@ PlasmoidItem {
                     root.claudeExtraUsageUsed = extraUsage.used_credits || 0;
                     root.claudeExtraUsagePct = extraUsage.utilization || 0;
                     root.claudeExtraUsageCurrency = extraUsage.currency || "USD";
-                    var fReset = new Date(f.resets_at || "");
-                    root.sessionResetDate = !isNaN(fReset.getTime()) ? fReset : null;
-                    root.sessionResetTime = !isNaN(fReset.getTime()) ? Qt.formatTime(fReset, "hh:mm") : "";
-                    var sReset = new Date(s.resets_at || "");
-                    root.weeklyResetDate = !isNaN(sReset.getTime()) ? sReset : null;
-                    root.weeklyResetTime = !isNaN(sReset.getTime()) ? Qt.formatDateTime(sReset, "MMM d, hh:mm") : "";
+                    root.sessionResetDate = root.normalizedResetDate(normalized.session.resetAt);
+                    root.sessionResetTime = root.sessionResetDate ? Qt.formatTime(root.sessionResetDate, "hh:mm") : "";
+                    root.weeklyResetDate = root.normalizedResetDate(normalized.weekly.resetAt);
+                    root.weeklyResetTime = root.weeklyResetDate ? Qt.formatDateTime(root.weeklyResetDate, "MMM d, hh:mm") : "";
+                    root.ensureAvailableChartWindow("claude", root.sessionAvailable, root.weeklyAvailable);
                     root.updateCountdowns();
                     root.errorMsg = "";
                     root.stale = false;
                     root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
                     root._offline = false;
                     offlineRetryTimer.stop();
-                    root.recordUsage(root.sessionPct, root.weeklyPct);
+                    if (root.sessionAvailable || root.weeklyAvailable)
+                        root.recordUsage(root.sessionPct, root.weeklyPct, root.sessionAvailable, root.weeklyAvailable);
                 } catch (_) {
                     root.errorMsg = "parse error";
                     root.stale = root.lastUpdate !== "";
@@ -1726,10 +1713,75 @@ PlasmoidItem {
     }
 
     // ── Codex / ChatGPT-plan usage ────────────────────────────────────────────
-    // Uses the Codex OAuth access token to read the plan's rolling rate-limit
-    // windows (5-hour + weekly). This is what "messages remaining" maps to for a
-    // ChatGPT-plan login; it's separate from OpenAI API org billing.
+    // Uses the local Codex app-server first, with the authenticated web endpoint
+    // retained as a fallback. This is separate from OpenAI API org billing.
+    function normalizedResetDate(resetAt) {
+        if (resetAt === null || resetAt === undefined || resetAt === "")
+            return null;
+
+        var date = new Date(resetAt);
+        return isNaN(date.getTime()) ? null : date;
+    }
+
+    function applyCodexUsage(payload) {
+        var normalized = UsageWindows.normalizeCodex(payload);
+        root.codexSessionAvailable = normalized.session.available;
+        root.codexSessionPct = normalized.session.pct;
+        root.codexSessionResetDate = root.normalizedResetDate(normalized.session.resetAt);
+        root.codexWeeklyAvailable = normalized.weekly.available;
+        root.codexWeeklyPct = normalized.weekly.pct;
+        root.codexWeeklyResetDate = root.normalizedResetDate(normalized.weekly.resetAt);
+        root.codexUsageAvailable = root.codexSessionAvailable || root.codexWeeklyAvailable;
+        root.ensureAvailableChartWindow("openai", root.codexSessionAvailable, root.codexWeeklyAvailable);
+
+        var main = payload.rateLimits || payload.rate_limit || {};
+        if (main.planType)
+            root.openaiPlanType = main.planType;
+        else if (payload.plan_type)
+            root.openaiPlanType = payload.plan_type;
+
+        root.codexLimitReached = main.limit_reached === true || (main.rateLimitReachedType !== null && main.rateLimitReachedType !== undefined);
+        var parsedAdditional = [];
+        for (var i = 0; i < normalized.additional.length; i++) {
+            var entry = normalized.additional[i];
+            parsedAdditional.push({
+                "name": entry.name,
+                "session": {
+                    "available": entry.session.available,
+                    "pct": entry.session.pct,
+                    "reset": root.normalizedResetDate(entry.session.resetAt)
+                },
+                "weekly": {
+                    "available": entry.weekly.available,
+                    "pct": entry.weekly.pct,
+                    "reset": root.normalizedResetDate(entry.weekly.resetAt)
+                },
+                "limit_reached": entry.limitReached
+            });
+        }
+        root.codexAdditionalLimits = parsedAdditional;
+        root.updateCountdowns();
+
+        if (root.codexUsageAvailable) {
+            root.recordCodexUsage(root.codexSessionPct, root.codexWeeklyPct, root.codexSessionAvailable, root.codexWeeklyAvailable);
+            root.errorMsg = "";
+            root.stale = false;
+            root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
+        }
+
+        return root.codexUsageAvailable;
+    }
+
     function fetchCodexUsage() {
+        if (!root.openaiCodexLoggedIn)
+            return ;
+
+        var cmd = root.scriptPath("get-codex-rate-limits");
+        codexUsageSource.disconnectSource(cmd);
+        codexUsageSource.connectSource(cmd);
+    }
+
+    function fetchCodexUsageFromWeb() {
         if (!root._openaiAccessToken)
             return ;
 
@@ -1751,55 +1803,17 @@ PlasmoidItem {
             if (xhr.status !== 200) {
                 // Don't surface as a hard error — account status still shows.
                 root.codexUsageAvailable = false;
+                root.codexSessionAvailable = false;
+                root.codexWeeklyAvailable = false;
                 return ;
             }
             try {
                 var d = JSON.parse(xhr.responseText);
-                if (d.plan_type)
-                    root.openaiPlanType = d.plan_type;
-
-                var rl = d.rate_limit || {
-                };
-                var pw = rl.primary_window || {
-                };
-                var sw = rl.secondary_window || {
-                };
-                root.codexPrimaryPct = pw.used_percent || 0;
-                root.codexSecondaryPct = sw.used_percent || 0;
-                root.codexLimitReached = rl.limit_reached === true;
-                root.codexPrimaryResetDate = pw.reset_at ? new Date(pw.reset_at * 1000) : null;
-                root.codexSecondaryResetDate = sw.reset_at ? new Date(sw.reset_at * 1000) : null;
-                root.codexUsageAvailable = (rl.primary_window !== undefined || rl.secondary_window !== undefined);
-                // Parse per-model additional rate limits
-                var addl = d.additional_rate_limits || [];
-                var parsedAddl = [];
-                for (var i = 0; i < addl.length; i++) {
-                    var entry = addl[i];
-                    var erl = entry.rate_limit || {
-                    };
-                    var epw = erl.primary_window || {
-                    };
-                    var esw = erl.secondary_window || {
-                    };
-                    parsedAddl.push({
-                        "name": entry.limit_name || ("Model " + (i + 1)),
-                        "primary_pct": epw.used_percent || 0,
-                        "primary_reset": epw.reset_at ? new Date(epw.reset_at * 1000) : null,
-                        "secondary_pct": esw.used_percent || 0,
-                        "secondary_reset": esw.reset_at ? new Date(esw.reset_at * 1000) : null,
-                        "limit_reached": erl.limit_reached === true
-                    });
-                }
-                root.codexAdditionalLimits = parsedAddl;
-                root.updateCountdowns();
-                root.errorMsg = "";
-                root.stale = false;
-                root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
-                if (root.codexUsageAvailable)
-                    root.recordCodexUsage(root.codexPrimaryPct, root.codexSecondaryPct);
-
+                root.applyCodexUsage(d);
             } catch (e) {
                 root.codexUsageAvailable = false;
+                root.codexSessionAvailable = false;
+                root.codexWeeklyAvailable = false;
             }
         };
         xhr.send();
@@ -1919,11 +1933,15 @@ PlasmoidItem {
         if (tab === "claude") {
             var fCountdown = root.sessionCountdown === "resetting..." ? " · resetting..." : (root.sessionCountdown ? " (" + root.sessionCountdown + ")" : "");
             var sCountdown = root.weeklyCountdown === "resetting..." ? " · resetting..." : (root.weeklyCountdown ? " (" + root.weeklyCountdown + ")" : "");
-            lines.push("Claude 5H: " + Math.round(root.sessionPct) + "%" + fCountdown);
-            if (root.sessionTokenLimit > 0)
-                lines.push("  " + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) + " tokens");
+            if (root.sessionAvailable) {
+                lines.push("Claude 5H: " + Math.round(root.sessionPct) + "%" + fCountdown);
+                if (root.sessionTokenLimit > 0)
+                    lines.push("  " + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) + " tokens");
 
-            lines.push("Claude 7D: " + Math.round(root.weeklyPct) + "%" + sCountdown);
+            }
+
+            if (root.weeklyAvailable)
+                lines.push("Claude 7D: " + Math.round(root.weeklyPct) + "%" + sCountdown);
             if (root.claudeExtraTokens > 0)
                 lines.push("Extra budget: " + root.formatTokens(root.claudeExtraTokens) + " tokens left");
 
@@ -1954,10 +1972,11 @@ PlasmoidItem {
             if (root.openaiCodexLoggedIn)
                 lines.push("Codex: signed in" + (root.openaiEmail ? " as " + root.openaiEmail : ""));
 
-            if (root.codexUsageAvailable) {
-                lines.push("Codex 5H left: " + Math.round(100 - root.codexPrimaryPct) + "%" + (root.codexPrimaryCountdown ? " (resets in " + root.codexPrimaryCountdown + ")" : ""));
-                lines.push("Codex weekly left: " + Math.round(100 - root.codexSecondaryPct) + "%");
-            }
+            if (root.codexSessionAvailable)
+                lines.push("Codex 5H left: " + Math.round(100 - root.codexSessionPct) + "%" + (root.codexSessionCountdown ? " (resets in " + root.codexSessionCountdown + ")" : ""));
+
+            if (root.codexWeeklyAvailable)
+                lines.push("Codex weekly left: " + Math.round(100 - root.codexWeeklyPct) + "%" + (root.codexWeeklyCountdown ? " (resets in " + root.codexWeeklyCountdown + ")" : ""));
             if (root.openaiPlanType)
                 lines.push("Plan: " + root.openaiPlanType);
 
@@ -2226,6 +2245,8 @@ PlasmoidItem {
                     fetchClaudeApiUsage();
 
             } else if (root._claudeAdminToken) {
+                root.sessionAvailable = false;
+                root.weeklyAvailable = false;
                 root.sessionPct = 0;
                 root.weeklyPct = 0;
                 root.sessionTokenLimit = 0;
@@ -2233,6 +2254,8 @@ PlasmoidItem {
                 fetchClaudeApiUsage();
                 root.errorMsg = "OAuth missing — API stats only";
             } else {
+                root.sessionAvailable = false;
+                root.weeklyAvailable = false;
                 root.errorMsg = "Claude not logged in";
             }
         }
@@ -2256,9 +2279,9 @@ PlasmoidItem {
         }
     }
 
-    // ── Claude Code local activity stats ─────────────────────────────────────
     Plasma5Support.DataSource {
         id: claudeStatsSource
+
         engine: "executable"
         connectedSources: []
         onNewData: function(src, data) {
@@ -2301,7 +2324,8 @@ PlasmoidItem {
                 root.antigravityPromptCreditsAvailable = credits.available || 0;
                 root.antigravityPlanType = res.planType || (res.method === "local" ? "LOCAL" : "CLOUD");
                 var modelsList = res.models || [];
-                var newModels = {};
+                var newModels = {
+                };
                 var totalUsed = 0;
                 var modelCount = 0;
                 var googleUsed = 0;
@@ -2309,91 +2333,60 @@ PlasmoidItem {
                 var externalUsed = 0;
                 var externalCount = 0;
                 var earliestReset = null;
-                // Accumulator for the IDE-style quota groups (Gemini vs Claude & GPT).
                 var groupAcc = {
-                    "gemini": {
-                        key: "gemini",
-                        label: "Gemini Models",
-                        used: 0,
-                        count: 0,
-                        resetDate: null,
-                        isExhausted: false,
-                        models: []
-                    },
-                    "external": {
-                        key: "external",
-                        label: "Claude & GPT Models",
-                        used: 0,
-                        count: 0,
-                        resetDate: null,
-                        isExhausted: false,
-                        models: []
-                    }
+                    gemini: { key: "gemini", label: "Gemini Models", used: 0, count: 0, resetDate: null, isExhausted: false, models: [] },
+                    external: { key: "external", label: "Claude & GPT Models", used: 0, count: 0, resetDate: null, isExhausted: false, models: [] }
                 };
                 for (var i = 0; i < modelsList.length; i++) {
                     var m = modelsList[i];
                     var remaining = m.remainingPercentage !== undefined ? m.remainingPercentage : -1;
-                    var usedPct = remaining !== -1 ? Math.max(0, Math.min(100, (1.0 - remaining) * 100)) : 0;
+                    var usedPct = remaining !== -1 ? Math.max(0, Math.min(100, (1 - remaining) * 100)) : 0;
                     newModels[m.modelId] = {
-                        displayName: m.label || m.modelId,
-                        usedPct: usedPct,
-                        resetTime: m.resetTime || "",
-                        isExhausted: !!m.isExhausted,
-                        hasQuota: remaining !== -1
+                        "displayName": m.label || m.modelId,
+                        "usedPct": usedPct,
+                        "resetTime": m.resetTime || "",
+                        "isExhausted": !!m.isExhausted,
+                        "hasQuota": remaining !== -1
                     };
-                    var name = (m.label || m.modelId).toLowerCase();
-                    var fam = (name.indexOf("gemini") !== -1 || name.indexOf("google") !== -1) ? "gemini" : "external";
-                    var grp = groupAcc[fam];
                     if (remaining !== -1) {
                         totalUsed += usedPct;
                         modelCount++;
-                        if (fam === "gemini") {
+                        var name = (m.label || m.modelId).toLowerCase();
+                        if (name.indexOf("gemini") !== -1 || name.indexOf("google") !== -1) {
                             googleUsed += usedPct;
                             googleCount++;
                         } else {
                             externalUsed += usedPct;
                             externalCount++;
                         }
-                        grp.used += usedPct;
-                        grp.count++;
+                        var family = (name.indexOf("gemini") !== -1 || name.indexOf("google") !== -1) ? "gemini" : "external";
+                        groupAcc[family].used += usedPct;
+                        groupAcc[family].count++;
+                    } else {
+                        var family = ((m.label || m.modelId).toLowerCase().indexOf("gemini") !== -1 || (m.label || m.modelId).toLowerCase().indexOf("google") !== -1) ? "gemini" : "external";
                     }
+                    groupAcc[family].models.push(m.modelId);
                     if (m.isExhausted)
-                        grp.isExhausted = true;
-                    grp.models.push(m.modelId);
+                        groupAcc[family].isExhausted = true;
                     if (m.resetTime) {
                         var rd = new Date(m.resetTime);
                         if (!isNaN(rd.getTime())) {
-                            if (earliestReset === null || rd < earliestReset)
-                                earliestReset = rd;
-                            // The 5-hour window is shared within a group; keep the
-                            // earliest reset as the group's countdown anchor.
-                            if (grp.resetDate === null || rd < grp.resetDate)
-                                grp.resetDate = rd;
+                            if (earliestReset === null || rd < earliestReset) earliestReset = rd;
+                            if (groupAcc[family].resetDate === null || rd < groupAcc[family].resetDate) groupAcc[family].resetDate = rd;
                         }
+
                     }
                 }
                 root.antigravityModels = newModels;
                 root.antigravityPct = modelCount > 0 ? totalUsed / modelCount : 0;
                 root.antigravityGooglePct = googleCount > 0 ? googleUsed / googleCount : 0;
                 root.antigravityExternalPct = externalCount > 0 ? externalUsed / externalCount : 0;
-                // Materialise the groups (Gemini first), dropping any that are empty.
-                var groupsOut = [];
-                var order = ["gemini", "external"];
-                for (var g = 0; g < order.length; g++) {
-                    var ga = groupAcc[order[g]];
-                    if (ga.models.length === 0)
-                        continue;
-                    groupsOut.push({
-                        key: ga.key,
-                        label: ga.label,
-                        usedPct: ga.count > 0 ? ga.used / ga.count : 0,
-                        resetDate: ga.resetDate,
-                        resetTime: ga.resetDate ? Qt.formatDateTime(ga.resetDate, "MMM d, hh:mm") : "",
-                        isExhausted: ga.isExhausted,
-                        models: ga.models.sort()
-                    });
-                }
-                root.antigravityGroups = groupsOut;
+                root.antigravityGroups = [];
+                ["gemini", "external"].forEach(function(key) {
+                    var group = groupAcc[key];
+                    if (group.models.length > 0)
+                        root.antigravityGroups.push({ key: key, label: group.label, usedPct: group.count > 0 ? group.used / group.count : 0, resetDate: group.resetDate, resetTime: group.resetDate ? Qt.formatDateTime(group.resetDate, "MMM d, hh:mm") : "", isExhausted: group.isExhausted, models: group.models.sort() });
+                });
                 root.recordAntigravityUsage(root.antigravityPct);
                 if (earliestReset) {
                     root.antigravityResetDate = earliestReset;
@@ -2469,6 +2462,27 @@ PlasmoidItem {
                 root.openaiTotalOutputTokens = 0;
                 root.errorMsg = "OpenAI: no API key or Codex login";
                 root.stale = root.lastUpdate !== "";
+            }
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: codexUsageSource
+
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(src, data) {
+            disconnectSource(src);
+            if (root.enabledTabs[root.activeTab] !== "openai" && !root.panelShows("openai"))
+                return ;
+
+            try {
+                var payload = JSON.parse((data["stdout"] || "").trim() || "{}");
+                if (!root.applyCodexUsage(payload))
+                    root.fetchCodexUsageFromWeb();
+
+            } catch (_) {
+                root.fetchCodexUsageFromWeb();
             }
         }
     }
@@ -2913,12 +2927,12 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconText: "C"
                 stale: root.stale && root.panelShows("claude")
-                visible: root.panelShows("claude")
+                visible: root.panelShows("claude") && root.sessionAvailable
                 tooltipText: "Claude 5-hour: " + Math.round(root.sessionPct) + "%" + (root.sessionTokenLimit > 0 ? "\n" + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) : "")
             }
 
             Rectangle {
-                visible: root.panelShows("claude")
+                visible: root.panelShows("claude") && root.sessionAvailable && root.weeklyAvailable
                 width: 1
                 height: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
@@ -2931,7 +2945,7 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconText: "7D"
                 stale: root.stale && root.panelShows("claude")
-                visible: root.panelShows("claude")
+                visible: root.panelShows("claude") && root.weeklyAvailable
                 tooltipText: "Claude 7-day: " + Math.round(root.weeklyPct) + "%" + (root.weeklyTokenLimit > 0 ? "\n" + root.formatTokens(root.weeklyTokensUsed) + " / " + root.formatTokens(root.weeklyTokenLimit) : "")
             }
 
@@ -2964,21 +2978,20 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                // When Codex plan usage is available (and no API cost to show), surface the
-                // 5-hour window % so the panel reflects "messages left" at a glance.
-                pct: root.codexUsageAvailable ? root.codexPrimaryPct : (root.openaiTotalCostUSD > 0 ? Math.min(100, (root.openaiTotalCostUSD / 10) * 100) : 0)
+                // Preserve the existing API-cost fallback when no plan limit is available.
+                pct: root.codexSessionAvailable ? root.codexSessionPct : (root.openaiTotalCostUSD > 0 ? Math.min(100, (root.openaiTotalCostUSD / 10) * 100) : 0)
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconText: "O"
                 stale: root.stale && root.panelShows("openai")
-                visible: root.panelShows("openai")
+                visible: root.panelShows("openai") && (root.codexSessionAvailable || !root.codexUsageAvailable)
                 showCost: !root.codexUsageAvailable
                 costText: root.openaiTotalCostUSD > 0 ? "$" + root.openaiTotalCostUSD.toFixed(2) : (root._openaiApiKey ? "API" : (root.openaiCodexLoggedIn ? "Codex" : "—"))
-                tooltipText: "OpenAI" + (root.codexUsageAvailable ? "\nCodex 5h: " + Math.round(100 - root.codexPrimaryPct) + "% left  ·  weekly: " + Math.round(100 - root.codexSecondaryPct) + "% left" : "") + (root._openaiApiKey ? "\nAPI usage configured\nCost (30d): $" + root.openaiTotalCostUSD.toFixed(2) + "\nIn: " + root.formatTokens(root.openaiTotalInputTokens) + "  Out: " + root.formatTokens(root.openaiTotalOutputTokens) : "\nAPI usage needs an OpenAI API key") + (root.openaiCodexLoggedIn ? "\nCodex signed in" + (root.openaiEmail ? ": " + root.openaiEmail : "") : "")
+                tooltipText: "OpenAI" + (root.codexSessionAvailable ? "\nCodex 5h: " + Math.round(100 - root.codexSessionPct) + "% left" : "") + (root.codexWeeklyAvailable ? "\nCodex weekly: " + Math.round(100 - root.codexWeeklyPct) + "% left" : "") + (root._openaiApiKey ? "\nAPI usage configured\nCost (30d): $" + root.openaiTotalCostUSD.toFixed(2) + "\nIn: " + root.formatTokens(root.openaiTotalInputTokens) + "  Out: " + root.formatTokens(root.openaiTotalOutputTokens) : "\nAPI usage needs an OpenAI API key") + (root.openaiCodexLoggedIn ? "\nCodex signed in" + (root.openaiEmail ? ": " + root.openaiEmail : "") : "")
             }
 
             Rectangle {
-                visible: root.panelShows("openai") && root.codexUsageAvailable
+                visible: root.panelShows("openai") && root.codexSessionAvailable && root.codexWeeklyAvailable
                 width: 1
                 height: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
@@ -2986,14 +2999,14 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                pct: root.codexSecondaryPct
+                pct: root.codexWeeklyPct
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconText: "7D"
                 stale: root.stale && root.panelShows("openai")
-                visible: root.panelShows("openai") && root.codexUsageAvailable
+                visible: root.panelShows("openai") && root.codexWeeklyAvailable
                 showCost: false
-                tooltipText: "OpenAI Codex weekly: " + Math.round(100 - root.codexSecondaryPct) + "% left"
+                tooltipText: "OpenAI Codex weekly: " + Math.round(100 - root.codexWeeklyPct) + "% left"
             }
 
             PanelSlot {
