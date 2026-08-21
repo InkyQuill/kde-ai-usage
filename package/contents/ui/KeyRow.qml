@@ -32,42 +32,19 @@ RowLayout {
         font.pixelSize: 10
         implicitHeight: 26
         echoMode: krReveal.checked ? TextInput.Normal : TextInput.Password
-        text: {
-            if (kr.configKey === "claudeAdminApiKey")
-                return Plasmoid.configuration.claudeAdminApiKey || "";
-            if (kr.configKey === "openaiApiKey")
-                return Plasmoid.configuration.openaiApiKey || "";
-            if (kr.configKey === "googleApiKey")
-                return Plasmoid.configuration.googleApiKey || "";
-            if (kr.configKey === "mistralApiKey")
-                return Plasmoid.configuration.mistralApiKey || "";
-            if (kr.configKey === "openrouterApiKey")
-                return Plasmoid.configuration.openrouterApiKey || "";
-            if (kr.configKey === "zaiToken")
-                return Plasmoid.configuration.zaiToken || "";
-            if (kr.configKey === "githubToken")
-                return Plasmoid.configuration.githubToken || "";
-            if (kr.configKey === "deepseekApiKey")
-                return Plasmoid.configuration.deepseekApiKey || "";
-            return "";
-        }
+        // Plasmoid.configuration is a QQmlPropertyMap, so it supports bracket
+        // access by key name — no need to enumerate every provider here.
+        text: Plasmoid.configuration[kr.configKey] || ""
         onEditingFinished: {
-            if (kr.configKey === "claudeAdminApiKey")
-                Plasmoid.configuration.claudeAdminApiKey = text;
-            if (kr.configKey === "openaiApiKey")
-                Plasmoid.configuration.openaiApiKey = text;
-            if (kr.configKey === "googleApiKey")
-                Plasmoid.configuration.googleApiKey = text;
-            if (kr.configKey === "mistralApiKey")
-                Plasmoid.configuration.mistralApiKey = text;
-            if (kr.configKey === "openrouterApiKey")
-                Plasmoid.configuration.openrouterApiKey = text;
-            if (kr.configKey === "zaiToken")
-                Plasmoid.configuration.zaiToken = text;
-            if (kr.configKey === "githubToken")
-                Plasmoid.configuration.githubToken = text;
-            if (kr.configKey === "deepseekApiKey")
-                Plasmoid.configuration.deepseekApiKey = text;
+            // A key is pasted, never typed, and a paste out of a browser or a
+            // password manager often carries a trailing space or newline. Trim
+            // once here, the same way the Python interpreter field does, so the
+            // stored value is the one the user meant — and write it back to the
+            // field, so what is shown is what was saved.
+            var val = String(text).trim();
+            if (val !== text)
+                text = val;
+            Plasmoid.configuration[kr.configKey] = val;
         }
     }
     QQC2.ToolButton {

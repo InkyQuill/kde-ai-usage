@@ -8,13 +8,74 @@ ColumnLayout {
     id: openAiTabRoot
     property Item rootItem
 
+    property string subTab: "usage"
+
     visible: rootItem.enabledTabs[rootItem.activeTab] === "openai" && !rootItem.showSettings
     Layout.fillWidth: true
     spacing: 14
 
+    // ── Usage / Stats sub-tab toggle ───────────────────────────────────────────
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 26
+        radius: 6
+        color: Qt.rgba(1, 1, 1, 0.04)
+        border.width: 1
+        border.color: Qt.rgba(1, 1, 1, 0.07)
+        // Stats come from local rollouts, so they exist even without a login.
+        visible: rootItem.openaiCodexLoggedIn || rootItem.openaiHasApiKey || rootItem.codexStatsAvailable
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: 2
+            spacing: 2
+
+            Repeater {
+                model: [
+                    {
+                        id: "usage",
+                        label: "Usage"
+                    },
+                    {
+                        id: "stats",
+                        label: "Stats"
+                    }
+                ]
+
+                Rectangle {
+                    required property var modelData
+                    readonly property bool active: openAiTabRoot.subTab === modelData.id
+
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: 5
+                    color: active ? Qt.rgba(0.06, 0.64, 0.5, 0.2) : "transparent"
+                    border.width: active ? 1 : 0
+                    border.color: Qt.rgba(0.06, 0.64, 0.5, 0.35)
+
+                    PlasmaComponents.Label {
+                        anchors.centerIn: parent
+                        text: parent.modelData.label
+                        font.pixelSize: 11
+                        font.bold: parent.active
+                        opacity: parent.active ? 1 : 0.55
+                        color: Kirigami.Theme.textColor
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: openAiTabRoot.subTab = parent.modelData.id
+                    }
+                }
+            }
+        }
+    }
+
     // Codex / ChatGPT user identity & limits (top section, clean style)
     ColumnLayout {
-        visible: rootItem.openaiCodexLoggedIn
+        visible: rootItem.openaiCodexLoggedIn && openAiTabRoot.subTab === "usage"
         Layout.fillWidth: true
         spacing: 12
 
@@ -37,6 +98,66 @@ ColumnLayout {
                 color: Kirigami.Theme.textColor
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+            }
+
+            // Live model + reasoning effort from the newest Codex rollout.
+            Rectangle {
+                visible: rootItem.codexModel !== ""
+                implicitWidth: codexModelLabel.implicitWidth + 12
+                implicitHeight: 16
+                radius: 8
+                color: Qt.rgba(rootItem.openaiGreen.r, rootItem.openaiGreen.g, rootItem.openaiGreen.b, 0.15)
+                border.width: 1
+                border.color: Qt.rgba(rootItem.openaiGreen.r, rootItem.openaiGreen.g, rootItem.openaiGreen.b, 0.35)
+
+                PlasmaComponents.Label {
+                    id: codexModelLabel
+
+                    anchors.centerIn: parent
+                    text: rootItem.shortenModelName(rootItem.codexModel)
+                    font.pixelSize: 8
+                    color: rootItem.openaiGreen
+                }
+            }
+
+            Rectangle {
+                id: codexEffortChip
+
+                readonly property color effortColor: {
+                    if (rootItem.codexEffortLevel === "xhigh" || rootItem.codexEffortLevel === "high")
+                        return rootItem.dangerColor;
+
+                    if (rootItem.codexEffortLevel === "low" || rootItem.codexEffortLevel === "minimal")
+                        return rootItem.openaiGreen;
+
+                    return rootItem.warningColor;
+                }
+
+                visible: rootItem.codexEffortLevel !== ""
+                implicitWidth: codexEffortLabel.implicitWidth + 12
+                implicitHeight: 16
+                radius: 8
+                color: Qt.rgba(effortColor.r, effortColor.g, effortColor.b, 0.15)
+                border.width: 1
+                border.color: Qt.rgba(effortColor.r, effortColor.g, effortColor.b, 0.35)
+                QQC2.ToolTip.visible: codexEffortMA.containsMouse
+                QQC2.ToolTip.text: "Reasoning effort: " + rootItem.codexEffortLevel
+
+                PlasmaComponents.Label {
+                    id: codexEffortLabel
+
+                    anchors.centerIn: parent
+                    text: "effort: " + rootItem.codexEffortLevel
+                    font.pixelSize: 8
+                    color: codexEffortChip.effortColor
+                }
+
+                MouseArea {
+                    id: codexEffortMA
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                }
             }
             Rectangle {
                 visible: rootItem.openaiPlanType !== ""
@@ -176,7 +297,7 @@ ColumnLayout {
 
         // Notice if no API key is added, matching Claude's tip box design
         PlasmaComponents.Label {
-            visible: rootItem._openaiApiKey === ""
+            visible: !rootItem.openaiHasApiKey
             text: rootItem.codexUsageAvailable ? "Plan limits above. Add an OpenAI API key in settings for API token/cost data." : "Codex plan limits are separate from OpenAI API billing. Add an OpenAI API key in settings for token and cost data."
             font.pixelSize: 9
             opacity: 0.45
@@ -189,7 +310,7 @@ ColumnLayout {
 
     // API usage surface (bottom section, clean style)
     ColumnLayout {
-        visible: rootItem._openaiApiKey !== ""
+        visible: rootItem.openaiHasApiKey && openAiTabRoot.subTab === "usage"
         Layout.fillWidth: true
         spacing: 8
 
@@ -292,18 +413,18 @@ ColumnLayout {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 3
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        propagateComposedEvents: true
-                        QQC2.ToolTip.visible: containsMouse
-                        QQC2.ToolTip.delay: 400
-                        QQC2.ToolTip.text: {
-                            var m = rootItem.openaiModels[modelData];
-                            if (!m)
-                                return modelData;
-                            return modelData + "\nInput:  " + rootItem.formatTokens(m.input_tokens) + " tokens\nOutput: " + rootItem.formatTokens(m.output_tokens) + " tokens\nCost:   " + (m.priced ? "$" + m.cost_usd.toFixed(4) : "unpriced");
-                        }
+                    // HoverHandler rather than a MouseArea: a MouseArea here would be a
+                    // layout child, and anchoring it to fill the layout is undefined behavior.
+                    HoverHandler {
+                        id: modelHover
+                    }
+                    QQC2.ToolTip.visible: modelHover.hovered
+                    QQC2.ToolTip.delay: 400
+                    QQC2.ToolTip.text: {
+                        var m = rootItem.openaiModels[modelData];
+                        if (!m)
+                            return modelData;
+                        return modelData + "\nInput:  " + rootItem.formatTokens(m.input_tokens) + " tokens\nOutput: " + rootItem.formatTokens(m.output_tokens) + " tokens\nCost:   " + (m.priced ? "$" + m.cost_usd.toFixed(4) : "unpriced");
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -372,7 +493,7 @@ ColumnLayout {
 
     // No login and no key
     ColumnLayout {
-        visible: rootItem._openaiApiKey === "" && !rootItem.openaiCodexLoggedIn && rootItem.enabledTabs[rootItem.activeTab] === "openai"
+        visible: !rootItem.openaiHasApiKey && !rootItem.openaiCodexLoggedIn && rootItem.enabledTabs[rootItem.activeTab] === "openai" && openAiTabRoot.subTab === "usage"
         Layout.fillWidth: true
         spacing: 6
         PlasmaComponents.Label {
@@ -390,5 +511,224 @@ ColumnLayout {
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
         }
+    }
+
+    // ── Stats: lifetime Codex activity from ~/.codex/sessions ──────────────────
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 6
+        visible: openAiTabRoot.subTab === "stats" && !rootItem.codexStatsAvailable
+
+        PlasmaComponents.Label {
+            text: "No Codex history yet"
+            font.pixelSize: 12
+            font.bold: true
+            opacity: 0.7
+            color: Kirigami.Theme.textColor
+        }
+
+        PlasmaComponents.Label {
+            text: "Run a Codex CLI session and stats will appear here."
+            font.pixelSize: 10
+            opacity: 0.5
+            color: Kirigami.Theme.textColor
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 10
+        visible: openAiTabRoot.subTab === "stats" && rootItem.codexStatsAvailable
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            PlasmaComponents.Label {
+                text: "Activity Stats"
+                font.bold: true
+                font.pixelSize: 11
+                opacity: 0.7
+                color: Kirigami.Theme.textColor
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            PlasmaComponents.Label {
+                visible: rootItem.codexStatsFavoriteModel !== ""
+                text: "★ " + rootItem.shortenModelName(rootItem.codexStatsFavoriteModel)
+                font.pixelSize: 9
+                opacity: 0.5
+                color: Kirigami.Theme.textColor
+            }
+        }
+
+        GridLayout {
+            Layout.fillWidth: true
+            columns: 3
+            rowSpacing: 6
+            columnSpacing: 6
+
+            StatTile {
+                tileValue: rootItem.formatTokens(rootItem.codexStatsTotalTokens)
+                tileLabel: "tokens"
+                tileTip: "Cumulative tokens across all Codex sessions"
+            }
+
+            StatTile {
+                tileValue: Math.round(rootItem.codexStatsTotalSessions).toString()
+                tileLabel: "sessions"
+                tileTip: Math.round(rootItem.codexStatsTotalMessages) + " prompts total"
+            }
+
+            StatTile {
+                tileValue: Math.round(rootItem.codexStatsActiveDays) + (rootItem.codexStatsSpanDays > 0 ? "/" + Math.round(rootItem.codexStatsSpanDays) : "")
+                tileLabel: "active days"
+                tileTip: rootItem.codexStatsFirstDate ? "Since " + rootItem.codexStatsFirstDate : ""
+            }
+
+            StatTile {
+                tileValue: Math.round(rootItem.codexStatsCurrentStreak) + "d"
+                tileLabel: "streak"
+                tileSub: "best " + Math.round(rootItem.codexStatsLongestStreak) + "d"
+                tileTip: "Current consecutive-day streak\nLongest: " + Math.round(rootItem.codexStatsLongestStreak) + " days"
+            }
+
+            StatTile {
+                tileValue: rootItem.formatDuration(rootItem.codexStatsLongestSessionMs)
+                tileLabel: "longest session"
+                tileSub: rootItem.codexStatsLongestSessionMessages > 0 ? Math.round(rootItem.codexStatsLongestSessionMessages) + " msgs" : ""
+            }
+
+            StatTile {
+                tileValue: rootItem.formatTokens(rootItem.codexStatsTotalToolCalls)
+                tileLabel: "tool calls"
+                tileTip: "Function and custom tool invocations across all sessions"
+            }
+        }
+
+        // ── Per-model breakdown ────────────────────────────────────────────
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 5
+            visible: modelRepeater.count > 0
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: Qt.rgba(1, 1, 1, 0.08)
+            }
+
+            PlasmaComponents.Label {
+                text: "Models"
+                font.bold: true
+                font.pixelSize: 11
+                opacity: 0.7
+                color: Kirigami.Theme.textColor
+            }
+
+            Repeater {
+                id: modelRepeater
+
+                model: {
+                    var keys = Object.keys(rootItem.codexStatsModels);
+                    keys.sort(function (a, b) {
+                        return rootItem.codexStatsModels[b].total - rootItem.codexStatsModels[a].total;
+                    });
+                    return keys;
+                }
+
+                RowLayout {
+                    required property string modelData
+
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    PlasmaComponents.Label {
+                        text: rootItem.shortenModelName(parent.modelData)
+                        font.pixelSize: 10
+                        opacity: 0.65
+                        Layout.preferredWidth: 90
+                        elide: Text.ElideRight
+                        color: Kirigami.Theme.textColor
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    PlasmaComponents.Label {
+                        text: rootItem.codexStatsModels[parent.modelData].sessions + " sess"
+                        font.pixelSize: 9
+                        opacity: 0.4
+                        color: Kirigami.Theme.textColor
+                    }
+
+                    PlasmaComponents.Label {
+                        text: rootItem.formatTokens(rootItem.codexStatsModels[parent.modelData].total)
+                        font.pixelSize: 9
+                        opacity: 0.4
+                        color: Kirigami.Theme.textColor
+                    }
+
+                    PlasmaComponents.Label {
+                        text: rootItem.codexStatsTotalTokens > 0 ? Math.round(rootItem.codexStatsModels[parent.modelData].total / rootItem.codexStatsTotalTokens * 100) + "%" : "—"
+                        font.pixelSize: 11
+                        font.bold: true
+                        color: Kirigami.Theme.textColor
+                        Layout.preferredWidth: 38
+                        horizontalAlignment: Text.AlignRight
+                    }
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            PlasmaComponents.Label {
+                visible: rootItem.codexStatsComputedDate !== ""
+                text: "computed " + rootItem.codexStatsComputedDate.substring(0, 10)
+                font.pixelSize: 8
+                opacity: 0.35
+                color: Kirigami.Theme.textColor
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            // Local rollouts only cover this machine; the cloud dashboard has
+            // the per-surface (CLI / extension / web) breakdown and credits.
+            PlasmaComponents.Label {
+                id: analyticsLink
+
+                text: "Codex analytics ↗"
+                font.pixelSize: 8
+                font.underline: analyticsMA.containsMouse
+                opacity: analyticsMA.containsMouse ? 0.9 : 0.45
+                color: rootItem.openaiGreen
+                QQC2.ToolTip.visible: analyticsMA.containsMouse
+                QQC2.ToolTip.text: "Open chatgpt.com Codex usage analytics in your browser"
+
+                MouseArea {
+                    id: analyticsMA
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Qt.openUrlExternally("https://chatgpt.com/codex/cloud/settings/analytics#usage")
+                }
+            }
+        }
+    }
+
+    component StatTile: StatTileBase {
+        accentColor: rootItem.openaiGreen
     }
 }
