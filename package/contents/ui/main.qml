@@ -286,6 +286,11 @@ PlasmoidItem {
     property var zaiTokenLimit: null
     property var zaiTokenResetDate: null
     property string zaiTokenCountdown: ""
+    // Second TOKENS_LIMIT window of a plain API-token account (the ~7-day one)
+    property real zaiToken2Pct: 0
+    property var zaiToken2ResetDate: null
+    property bool zaiToken2Available: false
+    property string zaiToken2Countdown: ""
     property real zaiToolsPct: 0
     property var zaiToolsRemaining: null
     property var zaiToolsResetDate: null
@@ -1007,6 +1012,7 @@ PlasmoidItem {
         root.codexWeeklyCountdown = root.formatCountdown(root.codexWeeklyResetDate);
         root.kiroCountdown = root.formatCountdown(root.kiroResetDate);
         root.zaiTokenCountdown = root.formatCountdown(root.zaiTokenResetDate);
+        root.zaiToken2Countdown = root.formatCountdown(root.zaiToken2ResetDate);
         root.zaiToolsCountdown = root.formatCountdown(root.zaiToolsResetDate);
         root.zaiSessionCountdown = root.formatCountdown(root.zaiSessionResetDate);
         root.zaiWeeklyCountdown = root.formatCountdown(root.zaiWeeklyResetDate);
@@ -1424,11 +1430,15 @@ PlasmoidItem {
         root.zaiStartPlanName = startPlan.available === true ? (startPlan.name || "Start Plan") : "";
         root.zaiStartPlanBalances = startPlan.available === true ? (startPlan.balances || []) : [];
         var token = d.token || {};
+        var tokenLong = d.tokenLong || {};
         var tools = d.tools || {};
         root.zaiTokenPct = token.pct || 0;
         root.zaiTokenUsed = token.used === undefined ? null : token.used;
         root.zaiTokenLimit = token.limit === undefined ? null : token.limit;
         root.zaiTokenResetDate = root.dateFromEpoch(token.resetAt);
+        root.zaiToken2Pct = tokenLong.pct || 0;
+        root.zaiToken2ResetDate = root.dateFromEpoch(tokenLong.resetAt);
+        root.zaiToken2Available = (tokenLong.pct || 0) > 0 || (tokenLong.resetAt || 0) > 0;
         root.zaiToolsPct = tools.pct || 0;
         root.zaiToolsRemaining = tools.remaining === undefined ? null : tools.remaining;
         root.zaiToolsResetDate = root.dateFromEpoch(tools.resetAt);
@@ -2034,7 +2044,6 @@ PlasmoidItem {
                 iconColor: root.openrouterPurple
                 iconSource: Qt.resolvedUrl("../icons/openrouter.svg")
                 iconText: "OR"
-                windowTag: "FULL"
                 separatorBefore: root.panelHasPillBefore("openrouter")
                 stale: root.stale && root.panelShows("openrouter")
                 visible: root.panelShows("openrouter") && !root.showSettings
@@ -2058,19 +2067,37 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                // Prefer the coding-plan session window; fall back to the API-token quota.
-                pct: root.zaiPlanAvailable && root.zaiSessionAvailable ? root.zaiSessionPct : (root.zaiPlanAvailable && root.zaiWeeklyAvailable ? root.zaiWeeklyPct : root.zaiTokenPct)
+                // 5-hour window: coding-plan session credits, or the plain
+                // API-token quota when there is no plan.
+                pct: root.zaiPlanAvailable ? root.zaiSessionPct : root.zaiTokenPct
                 iconColor: root.zaiAccent
                 // Monochrome brand: flatten the mark to the theme's text
                 // colour — white on dark, black on light.
                 iconTint: Kirigami.Theme.textColor
                 iconSource: Qt.resolvedUrl("../icons/zai.svg")
                 iconText: "Z"
-                windowTag: root.zaiPlanAvailable ? (root.zaiSessionAvailable ? "5H" : "7D") : "5H"
+                windowTag: "5H"
                 separatorBefore: root.panelHasPillBefore("zai")
                 stale: root.stale && root.panelShows("zai")
-                visible: root.panelShows("zai")
-                tooltipText: (root.zaiPlanAvailable ? ("Z.AI credits (5h): " + Math.round(root.zaiSessionPct) + "%" + (root.zaiSessionCountdown ? "\nResets in " + root.zaiSessionCountdown : "") + "\nWeekly: " + Math.round(root.zaiWeeklyPct) + "%") : ("Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0 ? "\n" + root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens" : "") + (root.zaiTokenCountdown ? "\nToken reset: " + root.zaiTokenCountdown : ""))) + "\nTools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsRemaining > 0 ? "\nTools left: " + root.zaiToolsRemaining : "")
+                visible: root.panelShows("zai") && (root.zaiPlanAvailable ? root.zaiSessionAvailable : true)
+                tooltipText: root.zaiPlanAvailable ? ("Z.AI credits (5h): " + Math.round(root.zaiSessionPct) + "%" + (root.zaiSessionCountdown ? "\nResets in " + root.zaiSessionCountdown : "")) : ("Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0 ? "\n" + root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens" : "") + (root.zaiTokenCountdown ? "\nToken reset: " + root.zaiTokenCountdown : "") + "\nTools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsRemaining > 0 ? "\nTools left: " + root.zaiToolsRemaining : ""))
+            }
+
+            PanelSlot {
+                // 7-day window: weekly plan credits, or the second
+                // TOKENS_LIMIT window of a plain API-token account.
+                pct: root.zaiPlanAvailable ? root.zaiWeeklyPct : root.zaiToken2Pct
+                iconColor: root.zaiAccent
+                iconTint: Kirigami.Theme.textColor
+                iconSource: Qt.resolvedUrl("../icons/zai.svg")
+                iconText: "Z7"
+                windowTag: "7D"
+                // Divided from whatever reads before it: the 5H pill when
+                // both are up, otherwise the previous provider.
+                separatorBefore: root.panelHasPillBefore("zai") || (root.zaiPlanAvailable ? root.zaiSessionAvailable : true)
+                stale: root.stale && root.panelShows("zai")
+                visible: root.panelShows("zai") && (root.zaiPlanAvailable ? root.zaiWeeklyAvailable : root.zaiToken2Available)
+                tooltipText: root.zaiPlanAvailable ? ("Z.AI weekly credits: " + Math.round(root.zaiWeeklyPct) + "%" + (root.zaiWeeklyUsed !== null && root.zaiWeeklyTotal !== null && root.zaiWeeklyTotal > 0 ? "\n" + root.zaiWeeklyUsed + " / " + root.zaiWeeklyTotal + " credits" : "") + (root.zaiWeeklyCountdown ? "\nResets in " + root.zaiWeeklyCountdown : "")) : ("Z.AI tokens (7d): " + Math.round(root.zaiToken2Pct) + "%" + (root.zaiToken2Countdown ? "\nResets in " + root.zaiToken2Countdown : ""))
             }
 
             PanelSlot {
@@ -2090,7 +2117,6 @@ PlasmoidItem {
                 iconColor: root.deepseekBlue
                 iconSource: Qt.resolvedUrl("../icons/deepseek-color.svg")
                 iconText: "DS"
-                windowTag: "FULL"
                 separatorBefore: root.panelHasPillBefore("deepseek")
                 stale: root.stale && root.panelShows("deepseek")
                 visible: root.panelShows("deepseek")
@@ -2104,7 +2130,6 @@ PlasmoidItem {
                 iconColor: root.kimiBlue
                 iconSource: Qt.resolvedUrl("../icons/kimi.svg")
                 iconText: "K"
-                windowTag: "FULL"
                 separatorBefore: root.panelHasPillBefore("kimi")
                 stale: root.stale && root.panelShows("kimi")
                 visible: root.panelShows("kimi")
