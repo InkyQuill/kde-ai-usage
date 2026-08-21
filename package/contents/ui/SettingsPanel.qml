@@ -30,61 +30,12 @@ ColumnLayout {
         rowSpacing: 2
 
         Repeater {
-            model: [
-                {
-                    id: "claude",
-                    label: "Claude",
-                    color: "#cc785c"
-                },
-                {
-                    id: "antigravity",
-                    label: "Antigravity",
-                    color: "#4285f4"
-                },
-                {
-                    id: "openai",
-                    label: "OpenAI",
-                    color: "#10a37f"
-                },
-                {
-                    id: "kiro",
-                    label: "Kiro",
-                    color: "#8b5cf6"
-                },
-                {
-                    id: "mistral",
-                    label: "Mistral",
-                    color: "#ff7000"
-                },
-                {
-                    id: "openrouter",
-                    label: "OpenRouter",
-                    color: "#9333ea"
-                },
-                {
-                    id: "zai",
-                    label: "Z.AI",
-                    color: "#126ef4"
-                },
-                {
-                    id: "copilot",
-                    label: "Copilot",
-                    color: "#8b5cf6"
-                },
-                {
-                    id: "deepseek",
-                    label: "DeepSeek",
-                    color: "#4f8cff"
-                },
-                {
-                    id: "__spacer",
-                    label: "",
-                    color: "transparent"
-                }
-            ]
+            // Labels and brand colours come from the provider registry in
+            // main.qml rather than being restated here, so a colour change
+            // cannot leave this dot disagreeing with the tab it represents.
+            model: rootItem.providers
             RowLayout {
                 spacing: 6
-                visible: modelData.id !== "__spacer"
                 Rectangle {
                     width: 7
                     height: 7
@@ -100,47 +51,10 @@ ColumnLayout {
                 }
                 QQC2.Switch {
                     implicitHeight: 20
-                    checked: {
-                        if (modelData.id === "claude")
-                            return Plasmoid.configuration.claudeEnabled;
-                        if (modelData.id === "antigravity")
-                            return Plasmoid.configuration.antigravityEnabled;
-                        if (modelData.id === "openai")
-                            return Plasmoid.configuration.openaiEnabled;
-                        if (modelData.id === "kiro")
-                            return Plasmoid.configuration.kiroEnabled;
-                        if (modelData.id === "mistral")
-                            return Plasmoid.configuration.mistralEnabled;
-                        if (modelData.id === "openrouter")
-                            return Plasmoid.configuration.openrouterEnabled;
-                        if (modelData.id === "zai")
-                            return Plasmoid.configuration.zaiEnabled;
-                        if (modelData.id === "copilot")
-                            return Plasmoid.configuration.copilotEnabled;
-                        if (modelData.id === "deepseek")
-                            return Plasmoid.configuration.deepseekEnabled;
-                        return false;
-                    }
-                    onToggled: {
-                        if (modelData.id === "claude")
-                            Plasmoid.configuration.claudeEnabled = checked;
-                        if (modelData.id === "antigravity")
-                            Plasmoid.configuration.antigravityEnabled = checked;
-                        if (modelData.id === "openai")
-                            Plasmoid.configuration.openaiEnabled = checked;
-                        if (modelData.id === "kiro")
-                            Plasmoid.configuration.kiroEnabled = checked;
-                        if (modelData.id === "mistral")
-                            Plasmoid.configuration.mistralEnabled = checked;
-                        if (modelData.id === "openrouter")
-                            Plasmoid.configuration.openrouterEnabled = checked;
-                        if (modelData.id === "zai")
-                            Plasmoid.configuration.zaiEnabled = checked;
-                        if (modelData.id === "copilot")
-                            Plasmoid.configuration.copilotEnabled = checked;
-                        if (modelData.id === "deepseek")
-                            Plasmoid.configuration.deepseekEnabled = checked;
-                    }
+                    // Config key follows a fixed "<id>Enabled" convention for every
+                    // provider, so it can be looked up rather than enumerated.
+                    checked: Plasmoid.configuration[modelData.id + "Enabled"] || false
+                    onToggled: Plasmoid.configuration[modelData.id + "Enabled"] = checked
                 }
             }
         }
@@ -526,11 +440,6 @@ ColumnLayout {
             configKey: "openaiApiKey"
         }
         KeyRow {
-            label: "Google AI"
-            placeholder: "AIza…"
-            configKey: "googleApiKey"
-        }
-        KeyRow {
             label: "Mistral"
             placeholder: "or $MISTRAL_API_KEY"
             configKey: "mistralApiKey"
@@ -543,8 +452,14 @@ ColumnLayout {
             rowVisible: Plasmoid.configuration.openrouterEnabled
         }
         KeyRow {
+            label: "Grok / xAI"
+            placeholder: "or $GROK_API_KEY"
+            configKey: "grokApiKey"
+            rowVisible: Plasmoid.configuration.grokEnabled
+        }
+        KeyRow {
             label: "Z.AI Token"
-            placeholder: "or $ZAI_TOKEN"
+            placeholder: "optional with ZCode app login"
             configKey: "zaiToken"
             rowVisible: Plasmoid.configuration.zaiEnabled
         }
@@ -559,6 +474,12 @@ ColumnLayout {
             placeholder: "or $DEEPSEEK_API_KEY"
             configKey: "deepseekApiKey"
             rowVisible: Plasmoid.configuration.deepseekEnabled
+        }
+        KeyRow {
+            label: "Kimi / Moonshot"
+            placeholder: "or $MOONSHOT_API_KEY"
+            configKey: "moonshotApiKey"
+            rowVisible: Plasmoid.configuration.kimiEnabled
         }
         RowLayout {
             Layout.fillWidth: true
@@ -598,6 +519,130 @@ ColumnLayout {
                 Layout.fillWidth: true
                 elide: Text.ElideRight
             }
+        }
+    }
+
+    Rectangle {
+        Layout.fillWidth: true
+        height: 1
+        color: Qt.rgba(1, 1, 1, 0.08)
+    }
+
+    // ── Advanced ───────────────────────────────────────────────
+    PlasmaComponents.Label {
+        text: "Advanced"
+        font.bold: true
+        font.pixelSize: 10
+        opacity: 0.5
+        color: Kirigami.Theme.textColor
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 3
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 4
+
+            PlasmaComponents.Label {
+                text: "Python"
+                font.pixelSize: 10
+                opacity: 0.6
+                color: Kirigami.Theme.textColor
+                Layout.preferredWidth: 76
+                elide: Text.ElideRight
+            }
+            QQC2.TextField {
+                id: pythonPathField
+
+                text: Plasmoid.configuration.pythonPath || ""
+                placeholderText: "auto-detect"
+                implicitHeight: 26
+                Layout.fillWidth: true
+                font.pixelSize: 10
+                // Exported as $PYTHON3 to the shell tools; empty restores the
+                // built-in PATH search (python3 → python3.x → python).
+                onEditingFinished: {
+                    var val = String(text).trim();
+                    if (val === Plasmoid.configuration.pythonPath)
+                        return;
+
+                    Plasmoid.configuration.pythonPath = val;
+                    text = val;
+                    // Re-run immediately so a wrong path shows up as an error
+                    // here rather than at the next poll, minutes later.
+                    rootItem.refresh();
+                }
+            }
+        }
+        PlasmaComponents.Label {
+            text: "Interpreter for the backend — e.g. a venv's bin/python. Empty auto-detects from PATH."
+            font.pixelSize: 9
+            opacity: 0.45
+            color: Kirigami.Theme.textColor
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    // ── Terminal ───────────────────────────────────────────────
+    PlasmaComponents.Label {
+        text: "Terminal"
+        font.bold: true
+        font.pixelSize: 10
+        opacity: 0.5
+        color: Kirigami.Theme.textColor
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 3
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 4
+
+            PlasmaComponents.Label {
+                text: "Command"
+                font.pixelSize: 10
+                opacity: 0.6
+                color: Kirigami.Theme.textColor
+                Layout.preferredWidth: 76
+                elide: Text.ElideRight
+            }
+            QQC2.TextField {
+                id: cliPathField
+
+                // Resolved at runtime like every other tool path, so it stays
+                // correct wherever the plasmoid is installed.
+                readOnly: true
+                text: rootItem.scriptDir + "ai-usage-cli"
+                implicitHeight: 26
+                Layout.fillWidth: true
+                font.pixelSize: 10
+            }
+            PlasmaComponents.Button {
+                text: "Copy"
+                icon.name: "edit-copy"
+                implicitHeight: 26
+                font.pixelSize: 10
+                // QML has no clipboard API without a C++ helper; selecting the
+                // read-only field and copying it is the portable way.
+                onClicked: {
+                    cliPathField.selectAll();
+                    cliPathField.copy();
+                    cliPathField.deselect();
+                }
+            }
+        }
+        PlasmaComponents.Label {
+            text: "Same data as this popup, as a table in a shell. Link it into ~/.local/bin to run it as ai-usage-cli, or pass --compact for one status-bar line."
+            font.pixelSize: 9
+            opacity: 0.45
+            color: Kirigami.Theme.textColor
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
         }
     }
 }

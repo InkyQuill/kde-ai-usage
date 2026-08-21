@@ -14,7 +14,7 @@
       <default>true</default>
     </entry>
     <entry name="kiroEnabled" type="Bool">
-      <default>false</default>
+      <default>true</default>
     </entry>
     <!-- API keys stored in plasmoid config (user's KDE wallet area, not world-readable) -->
     <entry name="claudeAdminApiKey" type="String">
@@ -23,14 +23,14 @@
     <entry name="openaiApiKey" type="String">
       <default></default>
     </entry>
-    <entry name="googleApiKey" type="String">
-      <default></default>
-    </entry>
     <entry name="mistralEnabled" type="Bool">
       <default>false</default>
     </entry>
     <entry name="openrouterEnabled" type="Bool">
       <default>false</default>
+    </entry>
+    <entry name="grokEnabled" type="Bool">
+      <default>true</default>
     </entry>
     <entry name="zaiEnabled" type="Bool">
       <default>false</default>
@@ -41,10 +41,16 @@
     <entry name="deepseekEnabled" type="Bool">
       <default>false</default>
     </entry>
+    <entry name="kimiEnabled" type="Bool">
+      <default>false</default>
+    </entry>
     <entry name="mistralApiKey" type="String">
       <default></default>
     </entry>
     <entry name="openrouterApiKey" type="String">
+      <default></default>
+    </entry>
+    <entry name="grokApiKey" type="String">
       <default></default>
     </entry>
     <entry name="zaiToken" type="String">
@@ -54,6 +60,9 @@
       <default></default>
     </entry>
     <entry name="deepseekApiKey" type="String">
+      <default></default>
+    </entry>
+    <entry name="moonshotApiKey" type="String">
       <default></default>
     </entry>
     <entry name="copilotQuota" type="Int">
@@ -88,6 +97,12 @@
     <!-- Poll interval in seconds (applies to all services) -->
     <entry name="pollIntervalSec" type="Int">
       <default>300</default>
+    </entry>
+    <!-- Interpreter for the shell tools, exported as $PYTHON3. Empty = let
+         tools/sh/python-interp.sh search PATH. Set it to pin a specific
+         interpreter, e.g. a virtualenv's bin/python. -->
+    <entry name="pythonPath" type="String">
+      <default></default>
     </entry>
     <!-- Appearance customizations -->
     <entry name="cardBgColor" type="String">

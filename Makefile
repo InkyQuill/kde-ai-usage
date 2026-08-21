@@ -1,4 +1,4 @@
-.PHONY: help view view-h install pack tag
+.PHONY: help view view-h install pack tag test lint-py check-pricing
 .DEFAULT_GOAL := help
 
 help: ## list targets
@@ -21,11 +21,32 @@ view-h: ## preview widget (horizontal)
 install: ## install test copy to local Plasma session
 	@./test_install.sh
 
+test: ## run the provider backend contract tests
+	@./tests/get-ai-usage.test.sh
+	@./tests/ai-usage-cli.test.sh
+	@./tests/credentials.test.sh
+	@./tests/python-interp.test.sh
+	@./tests/get-codex-stats.test.sh
+	@./tests/get-codex-rate-limits.test.sh
+	@if command -v node >/dev/null 2>&1; then node --test tests/*.test.js; \
+	  else echo "skipping tests/shared-code.test.js (node not found)"; fi
+
+lint-py: ## lint + format-check the Python backend (dev only, needs ruff)
+	@if command -v ruff >/dev/null 2>&1; then \
+	  ruff check package/contents/tools/aiusage && \
+	  ruff format --check package/contents/tools/aiusage; \
+	else \
+	  echo "ruff not found — install it or run 'nix develop'"; exit 1; \
+	fi
+
+check-pricing: ## report drift between billing.py and the live pricing pages (dev only)
+	@./scripts/check-pricing.py
+
 pack: ## build .plasmoid archive
 	@if command -v nix >/dev/null 2>&1 && [ -f flake.nix ]; then \
 	  nix run .#pack; \
 	else \
-	  ver=$$(grep -oE '"Version":[[:space:]]*"[^"]+"' package/metadata.json | head -1 | sed -E 's/.*"([^"]+)"$$/\1'); \
+	  ver=$$(grep -oE '"Version":[[:space:]]*"[^"]+"' package/metadata.json | head -1 | sed -E 's/.*"([^"]+)"$$/\1/'); \
 	  name=$$(basename "$$PWD"); \
 	  out="$$PWD/$$name-$$ver.plasmoid"; \
 	  rm -f "$$out"; \

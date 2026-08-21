@@ -1,0 +1,29 @@
+{
+  "id": "zai",
+  "now": 1785000000,
+  "inputs": {
+    "usage": {
+      "hasKey": true,
+      "keyValid": true,
+      "tokenSource": "zcode",
+      "level": "lite",
+      "credits": {
+        "session": {"pct": 40, "used": 48, "total": 120, "resetMs": 3600000},
+        "weekly": {"pct": 65, "used": 390, "total": 600, "resetMs": 1785086400000}
+      },
+      "startPlan": {
+        "name": "Start Plan",
+        "balances": [
+          {"model": "GLM-4.6", "used": 12000, "total": 45000, "resetMs": 1785050000000}
+        ]
+      },
+      "tokenPct": 0,
+      "toolsPct": 20,
+      "toolsRemaining": 80,
+      "toolsResetMs": 7200000,
+      "models": [],
+      "today": null
+    },
+    "status": null
+  }
+}

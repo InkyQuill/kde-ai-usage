@@ -16,6 +16,10 @@ RowLayout {
     property string costText: ""
     property string iconSource: ""
     property string iconText: "AI"
+    // When set to a visible colour the brand logo is flattened to it, so the
+    // session and weekly slots of one provider can be told apart at a glance.
+    property color iconTint: "transparent"
+    readonly property bool tinted: slot.iconTint.a > 0
     // Optional mini-trend series ({t,v}) drawn as a spark-line behind the readout
     property var spark: []
     // usage-level thresholds (kept local so this component is self-contained)
@@ -54,7 +58,17 @@ RowLayout {
             sourceSize.height: 34
             fillMode: Image.PreserveAspectFit
             smooth: true
-            visible: slot.iconSource !== "" && status !== Image.Error
+            visible: slot.iconSource !== "" && status !== Image.Error && !slot.tinted
+        }
+
+        Kirigami.Icon {
+            anchors.centerIn: parent
+            width: 17
+            height: 17
+            source: slot.iconSource
+            isMask: true
+            color: slot.iconTint
+            visible: slot.iconSource !== "" && slot.tinted
         }
 
         Rectangle {
@@ -76,9 +90,7 @@ RowLayout {
                 font.bold: true
                 color: slot.iconColor
             }
-
         }
-
     }
 
     PlasmaComponents.Label {
@@ -94,14 +106,11 @@ RowLayout {
             duration: 600
             easing.type: Easing.OutCubic
         }
-
     }
 
     Behavior on opacity {
         NumberAnimation {
             duration: 300
         }
-
     }
-
 }

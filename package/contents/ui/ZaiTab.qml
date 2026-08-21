@@ -22,6 +22,14 @@ ColumnLayout {
         return String(value);
     }
 
+    function planTitle() {
+        if (rootItem.zaiPlanAvailable && rootItem.zaiLevel !== "") {
+            var level = rootItem.zaiLevel;
+            return "GLM Coding " + level.charAt(0).toUpperCase() + level.slice(1).toLowerCase();
+        }
+        return "Z.AI";
+    }
+
     RowLayout {
         Layout.fillWidth: true
         spacing: 8
@@ -37,12 +45,31 @@ ColumnLayout {
         }
 
         PlasmaComponents.Label {
-            text: rootItem.zaiLevel !== "" ? "Z.AI · " + rootItem.zaiLevel : "Z.AI"
+            text: zaiTabRoot.planTitle()
             font.pixelSize: 10
             opacity: 0.65
             color: Kirigami.Theme.textColor
             elide: Text.ElideRight
             Layout.fillWidth: true
+        }
+
+        Rectangle {
+            visible: rootItem.zaiTokenSource === "zcode"
+            implicitHeight: 18
+            implicitWidth: zaiSourceBadgeLabel.implicitWidth + 12
+            radius: 4
+            color: Qt.rgba(0.07, 0.43, 0.96, 0.18)
+            border.width: 1
+            border.color: Qt.rgba(0.07, 0.43, 0.96, 0.35)
+
+            PlasmaComponents.Label {
+                id: zaiSourceBadgeLabel
+                anchors.centerIn: parent
+                text: "ZCODE"
+                font.pixelSize: 9
+                font.bold: true
+                color: rootItem.zaiBlue
+            }
         }
 
         Rectangle {
@@ -56,7 +83,7 @@ ColumnLayout {
             PlasmaComponents.Label {
                 id: zaiBadgeLabel
                 anchors.centerIn: parent
-                text: "CONNECTED"
+                text: rootItem.zaiLevel !== "" ? rootItem.zaiLevel.toUpperCase() : "CONNECTED"
                 font.pixelSize: 9
                 font.bold: true
                 color: rootItem.zaiBlue
@@ -65,7 +92,7 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: !rootItem.zaiKeyValid && rootItem._zaiToken === "" && rootItem.zaiError === ""
+        visible: !rootItem.zaiKeyValid && !rootItem.zaiHasKey && rootItem.zaiError === ""
         Layout.fillWidth: true
         spacing: 6
 
@@ -78,7 +105,7 @@ ColumnLayout {
         }
 
         PlasmaComponents.Label {
-            text: "Set a Z.AI token in settings or via\n$ZAI_TOKEN / ~/.config/zai/token"
+            text: "Set a Z.AI token in settings, via\n$ZAI_TOKEN / $Z_AI_API_KEY / ~/.config/zai/token,\nor log in with the ZCode app for coding-plan limits"
             font.pixelSize: 10
             opacity: 0.5
             color: Kirigami.Theme.textColor
@@ -109,8 +136,77 @@ ColumnLayout {
         }
     }
 
+    // ── Coding-plan credit windows (like Codex 5h / weekly) ──────────────────
     ColumnLayout {
-        visible: rootItem.zaiKeyValid
+        visible: rootItem.zaiKeyValid && rootItem.zaiPlanAvailable
+        Layout.fillWidth: true
+        spacing: 8
+
+        PopupRow {
+            visible: rootItem.zaiSessionAvailable
+            label: "5 Hours"
+            value: rootItem.zaiSessionPct
+            barColor: rootItem.zaiBlue
+            countdownText: rootItem.zaiSessionCountdown !== "" ? "in " + rootItem.zaiSessionCountdown : ""
+            etaText: rootItem.etaToFull("zs", rootItem.zaiSessionPct)
+            deltaText: rootItem.periodDelta("zs", rootItem.zaiSessionPct, 5 * 3600000, "last 5h")
+            tokenText: rootItem.zaiSessionUsed !== null && rootItem.zaiSessionTotal !== null && rootItem.zaiSessionTotal > 0 ? zaiTabRoot.fmt(rootItem.zaiSessionUsed) + " / " + zaiTabRoot.fmt(rootItem.zaiSessionTotal) + " credits" : Math.round(100 - rootItem.zaiSessionPct) + "% of credits left"
+            tooltipText: "Z.AI coding plan 5-hour limit\nUsed: " + Math.round(rootItem.zaiSessionPct) + "%  ·  " + Math.round(100 - rootItem.zaiSessionPct) + "% left"
+        }
+
+        PopupRow {
+            visible: rootItem.zaiWeeklyAvailable
+            label: "Weekly"
+            value: rootItem.zaiWeeklyPct
+            barColor: rootItem.zaiBlue
+            countdownText: rootItem.zaiWeeklyCountdown !== "" ? "in " + rootItem.zaiWeeklyCountdown : ""
+            etaText: rootItem.etaToFull("zw", rootItem.zaiWeeklyPct)
+            deltaText: rootItem.periodDelta("zw", rootItem.zaiWeeklyPct, 7 * 24 * 3600000, "last week")
+            tokenText: rootItem.zaiWeeklyUsed !== null && rootItem.zaiWeeklyTotal !== null && rootItem.zaiWeeklyTotal > 0 ? zaiTabRoot.fmt(rootItem.zaiWeeklyUsed) + " / " + zaiTabRoot.fmt(rootItem.zaiWeeklyTotal) + " credits" : Math.round(100 - rootItem.zaiWeeklyPct) + "% of credits left"
+            tooltipText: "Z.AI coding plan weekly limit\nUsed: " + Math.round(rootItem.zaiWeeklyPct) + "%  ·  " + Math.round(100 - rootItem.zaiWeeklyPct) + "% left"
+        }
+    }
+
+    // ── Free ZCode Start Plan token buckets ──────────────────────────────────
+    ColumnLayout {
+        visible: rootItem.zaiKeyValid && rootItem.zaiStartPlanBalances.length > 0
+        Layout.fillWidth: true
+        spacing: 8
+
+        Rectangle {
+            Layout.fillWidth: true
+            height: 1
+            color: Qt.rgba(1, 1, 1, 0.08)
+        }
+
+        PlasmaComponents.Label {
+            text: rootItem.zaiStartPlanName !== "" ? rootItem.zaiStartPlanName : "Start Plan"
+            font.pixelSize: 11
+            font.bold: true
+            opacity: 0.7
+            color: Kirigami.Theme.textColor
+        }
+
+        Repeater {
+            model: rootItem.zaiStartPlanBalances
+
+            PopupRow {
+                label: modelData.model || "model"
+                value: modelData.total > 0 ? Math.min(100, (modelData.used / modelData.total) * 100) : 0
+                barColor: rootItem.zaiBlue
+                countdownText: {
+                    var cd = rootItem.formatCountdown(rootItem.dateFromEpoch(modelData.resetAt));
+                    return cd === "resetting..." ? "resetting..." : (cd !== "" ? "in " + cd : "");
+                }
+                tokenText: zaiTabRoot.fmt(modelData.used) + " / " + zaiTabRoot.fmt(modelData.total) + " tokens"
+                tooltipText: (modelData.model || "model") + " daily token bucket\nResets daily"
+            }
+        }
+    }
+
+    // ── Legacy API-token quotas (shown when no coding-plan windows) ──────────
+    ColumnLayout {
+        visible: rootItem.zaiKeyValid && !rootItem.zaiPlanAvailable
         Layout.fillWidth: true
         spacing: 8
 
