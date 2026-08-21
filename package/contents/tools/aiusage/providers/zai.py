@@ -5,6 +5,7 @@ Ported from tools/sh/get-zai-usage.
 
 import datetime
 import os
+import sys
 
 from ..http import as_json, error_json, fetch_json, http_error_json, resolve_key
 
@@ -113,18 +114,109 @@ def _glm_acp_key():
     return key.strip() if isinstance(key, str) else ""
 
 
+def _gcm_decrypt(key, iv, ciphertext, tag):
+    """AES-256-GCM in one call, via the cryptography package or OpenSSL's
+    libcrypto loaded through ctypes. Returns None when no backend is available
+    or the key does not match — the caller treats that as "no session"."""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        return AESGCM(key).decrypt(iv, ciphertext + tag, None)
+    except ImportError:
+        pass
+    except Exception:
+        return None
+
+    import ctypes
+    import ctypes.util
+
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library("crypto") or "libcrypto.so")
+        ctx = lib.EVP_CIPHER_CTX_new()
+        if not ctx:
+            return None
+        try:
+            if lib.EVP_DecryptInit_ex(ctx, lib.EVP_aes_256_gcm(), None, key, iv) != 1:
+                return None
+            out = ctypes.create_string_buffer(len(ciphertext))
+            out_len = ctypes.c_int(0)
+            if lib.EVP_DecryptUpdate(ctx, out, ctypes.byref(out_len), ciphertext, len(ciphertext)) != 1:
+                return None
+            # EVP_CTRL_GCM_SET_TAG — applied after the ciphertext, before Final.
+            if lib.EVP_CIPHER_CTX_ctrl(ctx, 0x11, len(tag), ctypes.cast(tag, ctypes.c_void_p)) != 1:
+                return None
+            final = ctypes.create_string_buffer(16)
+            final_len = ctypes.c_int(0)
+            if lib.EVP_DecryptFinal_ex(ctx, final, ctypes.byref(final_len)) != 1:
+                return None
+            return out.raw[: out_len.value]
+        finally:
+            lib.EVP_CIPHER_CTX_free(ctx)
+    except Exception:
+        return None
+
+
+def _decrypt_enc_v1(value, home):
+    """One value from the ZCode credential store, decrypted in place.
+
+    The app wraps secrets as `enc:v1:<iv>.<tag>.<ciphertext>`, each part
+    base64url, AES-256-GCM under sha256(secret) where the secret is
+    `$ZCODE_CREDENTIAL_SECRET` or the machine-derived fallback
+    `zcode-credential-fallback:<platform>:<homedir>:<username>` — so the file
+    is only readable on the machine (and by the user) that wrote it, which is
+    the whole point of the exercise. Values without the prefix are the app's
+    own plaintext passthrough and come back unchanged. Any failure means no
+    credential, never an exception: the explicit token chain above still ran.
+    """
+    if not value.startswith("enc:v1:"):
+        return value
+    import base64
+    import hashlib
+
+    parts = value[len("enc:v1:") :].split(".")
+    if len(parts) != 3:
+        return None
+
+    def _b64(part):
+        return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+    try:
+        iv, tag, ciphertext = (_b64(p) for p in parts)
+        if len(iv) != 12 or len(tag) != 16:
+            return None
+        secret = os.environ.get("ZCODE_CREDENTIAL_SECRET") or f"zcode-credential-fallback:{sys.platform}:{home}:{_passwd_username()}"
+        key = hashlib.sha256(secret.encode("utf-8", "replace")).digest()
+        plain = _gcm_decrypt(key, iv, ciphertext, tag)
+        return plain.decode("utf-8", "replace").strip() if plain is not None else None
+    except Exception:
+        return None
+
+
+def _passwd_username():
+    """The passwd-file username, matching the app's os.userInfo() — not $USER,
+    which a shell can set to anything."""
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_name or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def _zcode_credentials():
     """The ZCode desktop app's own session, read as the very last resort.
 
     The app authenticates against the same Z.AI account (`oauth:zai:*`) and
-    keeps a long-lived access token plus a separate JWT for its plan APIs in
-    plain JSON, so a machine that is simply logged in holds a working
-    credential this provider can use without anything being pasted into
-    settings. The JWT unlocks the free Start Plan balance endpoint, which the
-    API token itself cannot reach. `WIDGET_ZCODE_CREDENTIALS` lets a test (or
-    a user) point somewhere else.
+    keeps its access token plus a separate JWT for the plan APIs in
+    `~/.zcode/v2/credentials.json`, AES-256-GCM encrypted with a
+    machine-local key (see _decrypt_enc_v1), so a machine that is simply
+    logged in holds a working credential this provider can use without
+    anything being pasted into settings. The JWT unlocks the free Start Plan
+    balance endpoint, which the API token itself cannot reach.
+    `WIDGET_ZCODE_CREDENTIALS` lets a test (or a user) point somewhere else.
     """
     path = os.environ.get("WIDGET_ZCODE_CREDENTIALS") or os.path.expanduser("~/.zcode/v2/credentials.json")
+    home = os.path.expanduser("~")
     if not os.path.isfile(path):
         return None
     try:
@@ -135,11 +227,15 @@ def _zcode_credentials():
     if not isinstance(data, dict):
         return None
     access = data.get("oauth:zai:access_token")
-    access = access.strip() if isinstance(access, str) else ""
+    if not isinstance(access, str):
+        return None
+    access = _decrypt_enc_v1(access.strip(), home) or ""
     if not access:
         return None
     jwt = data.get("zcodejwttoken")
-    return {"access_token": access, "zcode_jwt": jwt.strip() if isinstance(jwt, str) else ""}
+    if not isinstance(jwt, str):
+        jwt = ""
+    return {"access_token": access, "zcode_jwt": _decrypt_enc_v1(jwt.strip(), home) or ""}
 
 
 def _zai_key():

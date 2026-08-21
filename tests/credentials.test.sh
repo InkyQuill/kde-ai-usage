@@ -94,36 +94,58 @@ mkdir -p "$tmp/home/.config/glm-acp-agent"
 printf '{"z_ai_api_key": null}\n' >"$tmp/home/.config/glm-acp-agent/credentials.json"
 expect "a null key is treated as absent" "" "zai:_zai_key"
 
-# The ZCode desktop app keeps its whole session in plain JSON under ~/.zcode;
-# a logged-in machine must work with nothing pasted anywhere, and the provider
-# must remember where the key came from — the Start Plan balance endpoint is
-# only reachable with the app's own JWT.
+# The ZCode desktop app keeps its session under ~/.zcode with every secret
+# wrapped as `enc:v1:<iv>.<tag>.<ciphertext>` (AES-256-GCM under sha256 of
+# $ZCODE_CREDENTIAL_SECRET, or a machine-derived fallback string). The vectors
+# below are deterministic (fixed IV, fixed secret) so the store is realistic:
+# nothing in the file is readable without the key. A logged-in machine must
+# work with nothing pasted anywhere, and the provider must remember where the
+# key came from — the Start Plan balance endpoint needs the app's own JWT.
+ZCODE_VEC_ACCESS='enc:v1:BwcHBwcHBwcHBwcH.LDmacVRZeBX6IOn2zpkjOA.QCggnWXAsihbhkxWbtG4zWg'
+ZCODE_VEC_JWT='enc:v1:BwcHBwcHBwcHBwcH._ADpnKWlzGcSQC9tFztd-w.QCggnWXAuTxMzlxXJtY'
+
 fresh_home
 mkdir -p "$tmp/home/.zcode/v2"
-printf '{"oauth:zai:access_token": "from-zcode-app", "zcodejwttoken": "app-jwt"}\n' \
-    >"$tmp/home/.zcode/v2/credentials.json"
-expect "falls back to the ZCode app session" "from-zcode-app" "zai:_zai_key"
+printf '{"oauth:zai:access_token": "%s", "zcodejwttoken": "%s"}\n' \
+    "$ZCODE_VEC_ACCESS" "$ZCODE_VEC_JWT" >"$tmp/home/.zcode/v2/credentials.json"
+ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
+    expect "decrypts the ZCode app session" "zcode-access-cred" "zai:_zai_key"
 
 checks=$((checks + 1))
-zcode_tuple="$(HOME="$tmp/home" PYTHONPATH="$repo/package/contents/tools" python3 -c '
+zcode_tuple="$(HOME="$tmp/home" ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
+    PYTHONPATH="$repo/package/contents/tools" python3 -c '
 from aiusage.providers.zai import _zai_key
 print(_zai_key())')"
-if [ "$zcode_tuple" != "('from-zcode-app', 'zcode', 'app-jwt')" ]; then
-    printf 'FAIL the app session carries its source and JWT\n  want: %s\n  got:  %s\n' \
-        "('from-zcode-app', 'zcode', 'app-jwt')" "$zcode_tuple" >&2
+if [ "$zcode_tuple" != "('zcode-access-cred', 'zcode', 'zcode-jwt-cred')" ]; then
+    printf 'FAIL the app session carries its source and decrypted JWT\n  want: %s\n  got:  %s\n' \
+        "('zcode-access-cred', 'zcode', 'zcode-jwt-cred')" "$zcode_tuple" >&2
+    failures=$((failures + 1))
+fi
+
+# A secret from another machine cannot read this store — and must not crash.
+checks=$((checks + 1))
+foreign="$(HOME="$tmp/home" ZCODE_CREDENTIAL_SECRET=someone-elses-machine \
+    PYTHONPATH="$repo/package/contents/tools" python3 -c '
+from aiusage.providers.zai import _zai_key
+print(_zai_key()[0])')"
+if [ "$foreign" != "" ]; then
+    printf 'FAIL a foreign machine secret must yield no credential\n  got: %s\n' "$foreign" >&2
     failures=$((failures + 1))
 fi
 
 fresh_home
 mkdir -p "$tmp/home/.zcode/v2" "$tmp/home/.config/zai"
-printf '{"oauth:zai:access_token": "from-zcode-app"}\n' >"$tmp/home/.zcode/v2/credentials.json"
+printf '{"oauth:zai:access_token": "%s"}\n' "$ZCODE_VEC_ACCESS" \
+    >"$tmp/home/.zcode/v2/credentials.json"
 printf 'from-config-file\n' >"$tmp/home/.config/zai/token"
-expect "an explicit token still beats the app session" "from-config-file" "zai:_zai_key"
+ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
+    expect "an explicit token still beats the app session" "from-config-file" "zai:_zai_key"
 
 fresh_home
 mkdir -p "$tmp/home/.zcode/v2"
-printf '{"zcodejwttoken": "app-jwt-only"}\n' >"$tmp/home/.zcode/v2/credentials.json"
-expect "a ZCode session without an access token is absent" "" "zai:_zai_key"
+printf '{"zcodejwttoken": "%s"}\n' "$ZCODE_VEC_JWT" >"$tmp/home/.zcode/v2/credentials.json"
+ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
+    expect "a ZCode session without an access token is absent" "" "zai:_zai_key"
 
 # ── Moonshot / Kimi ─────────────────────────────────────────────────────────
 

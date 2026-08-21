@@ -429,15 +429,17 @@ if ! printf '%s' "$defaults" | jq -e '(.providers | length) == 0 and .active == 
 fi
 
 # ── ZCode app credentials: auto-detected coding-plan session ────────────────
-# A machine logged into the ZCode desktop app holds a working credential in
-# plain JSON; the provider must find it with nothing pasted into settings,
-# read the coding-plan CREDIT_LIMIT windows, and reach the Start Plan balance
-# endpoint with the app's own JWT. The fake tokens must not survive into the
-# envelope.
+# A machine logged into the ZCode desktop app holds a working credential —
+# every secret in the store AES-256-GCM encrypted (enc:v1 envelopes, fixed
+# vectors + $ZCODE_CREDENTIAL_SECRET so the run is deterministic); the
+# provider must decrypt, read the coding-plan CREDIT_LIMIT windows, and reach
+# the Start Plan balance endpoint with the app's own JWT. The plaintext
+# behind the vectors must not survive into the envelope.
 
 mkdir -p "$TEST_TMP/zcode-home/.zcode/v2"
 cat >"$TEST_TMP/zcode-home/.zcode/v2/credentials.json" <<'JSON'
-{"oauth:zai:access_token": "zcode-access-cred", "zcodejwttoken": "zcode-jwt-cred",
+{"oauth:zai:access_token": "enc:v1:BwcHBwcHBwcHBwcH.LDmacVRZeBX6IOn2zpkjOA.QCggnWXAsihbhkxWbtG4zWg",
+ "zcodejwttoken": "enc:v1:BwcHBwcHBwcHBwcH._ADpnKWlzGcSQC9tFztd-w.QCggnWXAuTxMzlxXJtY",
  "oauth:active_provider": "zai"}
 JSON
 # No "zai" key here: the point of the scenario is that the app's own session
@@ -461,6 +463,7 @@ JSON
 zcode_backend() {
     HOME="$TEST_TMP/zcode-home" \
         WIDGET_ZCODE_CREDENTIALS="$TEST_TMP/zcode-home/.zcode/v2/credentials.json" \
+        ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
         AI_USAGE_CONFIG="$TEST_TMP/zcode-config.json" \
         AI_USAGE_CACHE_DIR="$TEST_TMP/cache" \
         ZAI_RESPONSE_FILE="$TEST_TMP/zai-credits.json" \
@@ -497,6 +500,7 @@ printf '{"code":401,"msg":"token expired or incorrect","success":false}' >"$TEST
 checks=$((checks + 1))
 expired_output="$(HOME="$TEST_TMP/zcode-home" \
     WIDGET_ZCODE_CREDENTIALS="$TEST_TMP/zcode-home/.zcode/v2/credentials.json" \
+    ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
     AI_USAGE_CONFIG="$TEST_TMP/zcode-config.json" \
     AI_USAGE_CACHE_DIR="$TEST_TMP/cache" \
     ZAI_RESPONSE_FILE="$TEST_TMP/zai-expired.json" \
@@ -548,6 +552,7 @@ print(repr(resolve_key("WIDGET_TEST_KEY", "", )))
     # user never pasted.
     expired_msg="$(HOME="$TEST_TMP/zcode-home" \
         WIDGET_ZCODE_CREDENTIALS="$TEST_TMP/zcode-home/.zcode/v2/credentials.json" \
+        ZCODE_CREDENTIAL_SECRET=zcode-test-secret \
         PYTHONPATH="$ROOT/package/contents/tools" "$PY" -c '
 from aiusage.providers import zai
 zai.fetch_json = lambda *a, **k: type("R", (), {"status": 401, "body": ""})()
