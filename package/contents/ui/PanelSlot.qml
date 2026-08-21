@@ -16,6 +16,12 @@ RowLayout {
     property string costText: ""
     property string iconSource: ""
     property string iconText: "AI"
+    // Coding plans differ per provider, and one provider can have several
+    // pills (session + weekly): the corner tag says which window this is.
+    property string windowTag: ""
+    // Draws the same 1px divider the within-provider windows use ahead of
+    // this readout, so neighbouring providers don't visually merge.
+    property bool separatorBefore: false
     // When set to a visible colour the brand logo is flattened to it, so the
     // session and weekly slots of one provider can be told apart at a glance.
     property color iconTint: "transparent"
@@ -32,6 +38,17 @@ RowLayout {
     Component.onCompleted: displayPct = pct
     spacing: 5
     opacity: stale ? 0.55 : 1
+
+    Rectangle {
+        visible: slot.separatorBefore
+        width: 1
+        height: 14
+        color: Qt.rgba(1, 1, 1, 0.16)
+        Layout.alignment: Qt.AlignVCenter
+        // The panel row spaces pills 8px apart; 3 + the slot's own 5 keeps
+        // the divider centred like the standalone ones between windows.
+        Layout.rightMargin: 3
+    }
 
     MouseArea {
         anchors.fill: parent
@@ -89,6 +106,30 @@ RowLayout {
                 font.pixelSize: slot.iconText.length > 2 ? 8 : 9
                 font.bold: true
                 color: slot.iconColor
+            }
+        }
+
+        // Plan-window marker on the icon's corner, so a bare percentage is
+        // readable without the tooltip: same icon, different windows.
+        Rectangle {
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: slot.windowTag !== ""
+            width: windowTagLabel.implicitWidth + 4
+            height: 9
+            radius: 2
+            color: Qt.rgba(Kirigami.Theme.backgroundColor.r, Kirigami.Theme.backgroundColor.g, Kirigami.Theme.backgroundColor.b, 0.85)
+            border.width: 1
+            border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.3)
+
+            PlasmaComponents.Label {
+                id: windowTagLabel
+
+                anchors.centerIn: parent
+                text: slot.windowTag
+                font.pixelSize: 7
+                font.bold: true
+                color: Kirigami.Theme.textColor
             }
         }
     }

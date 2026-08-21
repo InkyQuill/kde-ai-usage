@@ -82,12 +82,12 @@ def normalize_zai(raw):
     res = raw["inputs"].get("usage") or {}
 
     if not isinstance(res, dict) or len(res) == 0:
-        return provider_error("zai", "Z.AI", "#126ef4", now, "Z.AI: no token configured", {"hasKey": False, "keyValid": False})
+        return provider_error("zai", "Z.AI", "#8a8f98", now, "Z.AI: no token configured", {"hasKey": False, "keyValid": False})
     if res.get("error") is not None:
         return provider_error(
             "zai",
             "Z.AI",
-            "#126ef4",
+            "#8a8f98",
             now,
             f"Z.AI: {res['error']}",
             {"hasKey": res.get("hasKey") is True, "keyValid": res.get("keyValid") is True},
@@ -120,7 +120,7 @@ def normalize_zai(raw):
     else:
         summary_pct = token_pct
 
-    r = provider_base("zai", "Z.AI", "#126ef4", now)
+    r = provider_base("zai", "Z.AI", "#8a8f98", now)
     r["summary"] = {"pct": summary_pct, "text": f"{jround(summary_pct)}%", "detail": res.get("level") or "", "hasChart": True}
     today = res.get("today") if isinstance(res.get("today"), dict) else None
     today_detail = _today_detail(today) if today else ""
@@ -169,9 +169,9 @@ def normalize_zai(raw):
     second_pct = credit_weekly["pct"] if credit_weekly["available"] else token2_pct
     second_kind = "credits (weekly)" if credit_weekly["available"] else "tokens (7d)"
     r["slots"] = [
-        {"pct": first_pct, "color": "#126ef4", "text": None, "tooltip": f"Z.AI credits (5h): {jround(first_pct)}%"},
-        {"pct": second_pct, "color": "#3b82f6", "text": None, "tooltip": f"Z.AI {second_kind}: {jround(second_pct)}%"},
-        {"pct": tools_pct, "color": "#60a5fa", "text": None, "tooltip": f"Z.AI tools: {jround(tools_pct)}%"},
+        {"pct": first_pct, "color": "#8a8f98", "text": None, "tooltip": f"Z.AI credits (5h): {jround(first_pct)}%"},
+        {"pct": second_pct, "color": "#a9aeb6", "text": None, "tooltip": f"Z.AI {second_kind}: {jround(second_pct)}%"},
+        {"pct": tools_pct, "color": "#c5c9cf", "text": None, "tooltip": f"Z.AI tools: {jround(tools_pct)}%"},
     ]
     if plan_windows:
         # The same rolling windows Claude and Codex chart, on the credit

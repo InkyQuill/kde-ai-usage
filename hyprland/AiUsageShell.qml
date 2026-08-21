@@ -86,7 +86,7 @@ ShellRoot {
         {
             id: "zai",
             label: "Z.AI",
-            accent: "#126ef4"
+            accent: "#8a8f98"
         },
         {
             id: "copilot",

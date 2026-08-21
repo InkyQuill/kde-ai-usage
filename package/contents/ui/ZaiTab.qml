@@ -39,7 +39,7 @@ ColumnLayout {
             source: "user-identity"
             width: 14
             height: 14
-            color: rootItem.zaiBlue
+            color: rootItem.zaiAccent
             isMask: true
             opacity: 0.75
         }
@@ -58,9 +58,9 @@ ColumnLayout {
             implicitHeight: 18
             implicitWidth: zaiSourceBadgeLabel.implicitWidth + 12
             radius: 4
-            color: Qt.rgba(0.07, 0.43, 0.96, 0.18)
+            color: Qt.rgba(0.54, 0.56, 0.6, 0.18)
             border.width: 1
-            border.color: Qt.rgba(0.07, 0.43, 0.96, 0.35)
+            border.color: Qt.rgba(0.54, 0.56, 0.6, 0.35)
 
             PlasmaComponents.Label {
                 id: zaiSourceBadgeLabel
@@ -68,7 +68,7 @@ ColumnLayout {
                 text: "ZCODE"
                 font.pixelSize: 9
                 font.bold: true
-                color: rootItem.zaiBlue
+                color: rootItem.zaiAccent
             }
         }
 
@@ -76,9 +76,9 @@ ColumnLayout {
             implicitHeight: 18
             implicitWidth: zaiBadgeLabel.implicitWidth + 12
             radius: 4
-            color: Qt.rgba(0.07, 0.43, 0.96, 0.18)
+            color: Qt.rgba(0.54, 0.56, 0.6, 0.18)
             border.width: 1
-            border.color: Qt.rgba(0.07, 0.43, 0.96, 0.35)
+            border.color: Qt.rgba(0.54, 0.56, 0.6, 0.35)
 
             PlasmaComponents.Label {
                 id: zaiBadgeLabel
@@ -86,7 +86,7 @@ ColumnLayout {
                 text: rootItem.zaiLevel !== "" ? rootItem.zaiLevel.toUpperCase() : "CONNECTED"
                 font.pixelSize: 9
                 font.bold: true
-                color: rootItem.zaiBlue
+                color: rootItem.zaiAccent
             }
         }
     }
@@ -146,7 +146,7 @@ ColumnLayout {
             visible: rootItem.zaiSessionAvailable
             label: "5 Hours"
             value: rootItem.zaiSessionPct
-            barColor: rootItem.zaiBlue
+            barColor: rootItem.zaiAccent
             countdownText: rootItem.zaiSessionCountdown !== "" ? "in " + rootItem.zaiSessionCountdown : ""
             etaText: rootItem.etaToFull("zs", rootItem.zaiSessionPct)
             deltaText: rootItem.periodDelta("zs", rootItem.zaiSessionPct, 5 * 3600000, "last 5h")
@@ -158,7 +158,7 @@ ColumnLayout {
             visible: rootItem.zaiWeeklyAvailable
             label: "Weekly"
             value: rootItem.zaiWeeklyPct
-            barColor: rootItem.zaiBlue
+            barColor: rootItem.zaiAccent
             countdownText: rootItem.zaiWeeklyCountdown !== "" ? "in " + rootItem.zaiWeeklyCountdown : ""
             etaText: rootItem.etaToFull("zw", rootItem.zaiWeeklyPct)
             deltaText: rootItem.periodDelta("zw", rootItem.zaiWeeklyPct, 7 * 24 * 3600000, "last week")
@@ -193,7 +193,7 @@ ColumnLayout {
             PopupRow {
                 label: modelData.model || "model"
                 value: modelData.total > 0 ? Math.min(100, (modelData.used / modelData.total) * 100) : 0
-                barColor: rootItem.zaiBlue
+                barColor: rootItem.zaiAccent
                 countdownText: {
                     var cd = rootItem.formatCountdown(rootItem.dateFromEpoch(modelData.resetAt));
                     return cd === "resetting..." ? "resetting..." : (cd !== "" ? "in " + cd : "");
@@ -213,7 +213,7 @@ ColumnLayout {
         PopupRow {
             label: "5h Tokens"
             value: rootItem.zaiTokenPct
-            barColor: rootItem.zaiBlue
+            barColor: rootItem.zaiAccent
             countdownText: rootItem.zaiTokenCountdown !== "" ? "in " + rootItem.zaiTokenCountdown : ""
             tokenText: rootItem.zaiTokenUsed === null || rootItem.zaiTokenLimit === null ? "—" : zaiTabRoot.fmt(rootItem.zaiTokenUsed) + " / " + zaiTabRoot.fmt(rootItem.zaiTokenLimit)
             tooltipText: "Z.AI token quota" + (rootItem.zaiTokenCountdown !== "" ? "\nResets in " + rootItem.zaiTokenCountdown : "")
@@ -222,7 +222,7 @@ ColumnLayout {
         PopupRow {
             label: "Monthly Tools"
             value: rootItem.zaiToolsPct
-            barColor: rootItem.zaiBlue
+            barColor: rootItem.zaiAccent
             countdownText: rootItem.zaiToolsCountdown !== "" ? "in " + rootItem.zaiToolsCountdown : ""
             tokenText: rootItem.zaiToolsRemaining !== null ? zaiTabRoot.fmt(rootItem.zaiToolsRemaining) + " remaining" : "—"
             tooltipText: "Z.AI monthly tool quota" + (rootItem.zaiToolsCountdown !== "" ? "\nResets in " + rootItem.zaiToolsCountdown : "")
@@ -233,9 +233,9 @@ ColumnLayout {
             Layout.fillWidth: true
             height: zaiModelsCol.implicitHeight + 20
             radius: 8
-            color: Qt.rgba(0.07, 0.43, 0.96, 0.08)
+            color: Qt.rgba(0.54, 0.56, 0.6, 0.08)
             border.width: 1
-            border.color: Qt.rgba(0.07, 0.43, 0.96, 0.22)
+            border.color: Qt.rgba(0.54, 0.56, 0.6, 0.22)
 
             ColumnLayout {
                 id: zaiModelsCol
@@ -275,7 +275,7 @@ ColumnLayout {
                             text: zaiTabRoot.fmt(modelData.usage)
                             font.pixelSize: 10
                             font.bold: true
-                            color: rootItem.zaiBlue
+                            color: rootItem.zaiAccent
                         }
                     }
                 }

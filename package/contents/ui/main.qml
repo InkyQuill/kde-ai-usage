@@ -402,7 +402,9 @@ PlasmoidItem {
     readonly property color mistralOrange: "#ff7000"
     readonly property color openrouterPurple: "#9333ea"
     readonly property color grokWhite: "#e6e6e6"
-    readonly property color zaiBlue: "#126ef4"
+    // Z.AI's brand is monochrome (black on white, white on black); the accent
+    // is their UI gray so bars and badges stay on-brand on both themes.
+    readonly property color zaiAccent: "#8a8f98"
     readonly property color copilotPurple: "#8b5cf6"
     readonly property color deepseekBlue: "#4f8cff"
     readonly property color kimiBlue: "#1e3a8a"
@@ -464,7 +466,7 @@ PlasmoidItem {
         {
             id: "zai",
             label: "Z.AI",
-            color: root.zaiBlue,
+            color: root.zaiAccent,
             icon: "zai.svg"
         },
         {
@@ -810,6 +812,32 @@ PlasmoidItem {
 
     function panelShows(tabId) {
         return root.pinnedTabs.length > 0 ? root.isPinned(tabId) : root.panelTab === tabId;
+    }
+
+    // Whether the provider's panel pill(s) are on screen right now — the
+    // between-provider dividers must not dangle when a whole provider hides
+    // (claude/openai pills also depend on window availability).
+    function providerPillVisible(tabId) {
+        if (!root.panelShows(tabId))
+            return false;
+        if (tabId === "claude")
+            return root.sessionAvailable || root.weeklyAvailable;
+        if (tabId === "openai")
+            return root.codexSessionAvailable || root.codexWeeklyAvailable || !root.codexUsageAvailable;
+        return true;
+    }
+
+    // True when any earlier provider in panel order shows a pill, so a
+    // divider ahead of this provider has something to divide from.
+    function panelHasPillBefore(tabId) {
+        for (var i = 0; i < root.providers.length; i++) {
+            var id = root.providers[i].id;
+            if (id === tabId)
+                return false;
+            if (root.providerPillVisible(id))
+                return true;
+        }
+        return false;
     }
 
     function togglePin(tabId) {
@@ -1880,6 +1908,7 @@ PlasmoidItem {
                 iconColor: root.sessionColor
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconText: "C"
+                windowTag: "5H"
                 stale: root.stale && root.panelShows("claude")
                 visible: root.panelShows("claude") && root.sessionAvailable
                 tooltipText: "Claude 5-hour: " + Math.round(root.sessionPct) + "%" + (root.sessionTokenLimit > 0 ? "\n" + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) : "")
@@ -1899,6 +1928,7 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconTint: root.weeklyColor
                 iconText: "7D"
+                windowTag: "7D"
                 stale: root.stale && root.panelShows("claude")
                 visible: root.panelShows("claude") && root.weeklyAvailable
                 tooltipText: "Claude 7-day: " + Math.round(root.weeklyPct) + "%" + (root.weeklyTokenLimit > 0 ? "\n" + root.formatTokens(root.weeklyTokensUsed) + " / " + root.formatTokens(root.weeklyTokenLimit) : "")
@@ -1909,6 +1939,8 @@ PlasmoidItem {
                 iconColor: root.googleBlue
                 iconSource: Qt.resolvedUrl("../icons/antigravity-color.svg")
                 iconText: "G"
+                windowTag: "30D"
+                separatorBefore: root.panelHasPillBefore("antigravity")
                 stale: root.stale && root.panelShows("antigravity")
                 visible: root.panelShows("antigravity")
                 tooltipText: "Gemini (Google) quota: " + Math.round(root.antigravityGooglePct) + "%" + (root.antigravityPlanType ? "\nPlan: " + root.antigravityPlanType : "") + (root.antigravityEmail ? "\n" + root.antigravityEmail : "")
@@ -1928,6 +1960,7 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/antigravity-color.svg")
                 iconTint: root.googleGreen
                 iconText: "X"
+                windowTag: "30D"
                 stale: root.stale && root.panelShows("antigravity")
                 visible: root.panelShows("antigravity")
                 tooltipText: "External models quota: " + Math.round(root.antigravityExternalPct) + "%" + (root.antigravityPlanType ? "\nPlan: " + root.antigravityPlanType : "") + (root.antigravityEmail ? "\n" + root.antigravityEmail : "")
@@ -1939,6 +1972,8 @@ PlasmoidItem {
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconText: "C"
+                windowTag: "5H"
+                separatorBefore: root.panelHasPillBefore("openai")
                 stale: root.stale && root.panelShows("openai")
                 visible: root.panelShows("openai") && (root.codexSessionAvailable || !root.codexUsageAvailable)
                 showCost: !root.codexUsageAvailable
@@ -1960,6 +1995,7 @@ PlasmoidItem {
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconTint: root.weeklyColor
                 iconText: "7D"
+                windowTag: "7D"
                 stale: root.stale && root.panelShows("openai")
                 visible: root.panelShows("openai") && root.codexWeeklyAvailable
                 showCost: false
@@ -1971,6 +2007,8 @@ PlasmoidItem {
                 iconColor: root.kiroPurple
                 iconSource: Qt.resolvedUrl("../icons/kiro.svg")
                 iconText: "K"
+                windowTag: "30D"
+                separatorBefore: root.panelHasPillBefore("kiro")
                 stale: root.stale && root.panelShows("kiro")
                 visible: root.panelShows("kiro")
                 showCost: !root.kiroUsageAvailable
@@ -1983,6 +2021,7 @@ PlasmoidItem {
                 iconColor: root.mistralOrange
                 iconSource: Qt.resolvedUrl("../icons/mistral-color.svg")
                 iconText: "M"
+                separatorBefore: root.panelHasPillBefore("mistral")
                 stale: root.stale && root.panelShows("mistral")
                 visible: root.panelShows("mistral")
                 showCost: true
@@ -1995,6 +2034,8 @@ PlasmoidItem {
                 iconColor: root.openrouterPurple
                 iconSource: Qt.resolvedUrl("../icons/openrouter.svg")
                 iconText: "OR"
+                windowTag: "FULL"
+                separatorBefore: root.panelHasPillBefore("openrouter")
                 stale: root.stale && root.panelShows("openrouter")
                 visible: root.panelShows("openrouter") && !root.showSettings
                 showCost: true
@@ -2007,6 +2048,8 @@ PlasmoidItem {
                 iconColor: root.grokWhite
                 iconSource: Qt.resolvedUrl("../icons/grok.svg")
                 iconText: "G"
+                windowTag: "30D"
+                separatorBefore: root.panelHasPillBefore("grok")
                 stale: root.stale && root.panelShows("grok")
                 visible: root.panelShows("grok") && !root.showSettings
                 showCost: !root.grokHasBilling
@@ -2017,9 +2060,14 @@ PlasmoidItem {
             PanelSlot {
                 // Prefer the coding-plan session window; fall back to the API-token quota.
                 pct: root.zaiPlanAvailable && root.zaiSessionAvailable ? root.zaiSessionPct : (root.zaiPlanAvailable && root.zaiWeeklyAvailable ? root.zaiWeeklyPct : root.zaiTokenPct)
-                iconColor: root.zaiBlue
+                iconColor: root.zaiAccent
+                // Monochrome brand: flatten the mark to the theme's text
+                // colour — white on dark, black on light.
+                iconTint: Kirigami.Theme.textColor
                 iconSource: Qt.resolvedUrl("../icons/zai.svg")
                 iconText: "Z"
+                windowTag: root.zaiPlanAvailable ? (root.zaiSessionAvailable ? "5H" : "7D") : "5H"
+                separatorBefore: root.panelHasPillBefore("zai")
                 stale: root.stale && root.panelShows("zai")
                 visible: root.panelShows("zai")
                 tooltipText: (root.zaiPlanAvailable ? ("Z.AI credits (5h): " + Math.round(root.zaiSessionPct) + "%" + (root.zaiSessionCountdown ? "\nResets in " + root.zaiSessionCountdown : "") + "\nWeekly: " + Math.round(root.zaiWeeklyPct) + "%") : ("Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0 ? "\n" + root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens" : "") + (root.zaiTokenCountdown ? "\nToken reset: " + root.zaiTokenCountdown : ""))) + "\nTools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsRemaining > 0 ? "\nTools left: " + root.zaiToolsRemaining : "")
@@ -2030,6 +2078,8 @@ PlasmoidItem {
                 iconColor: root.copilotPurple
                 iconSource: Qt.resolvedUrl("../icons/copilot-color.svg")
                 iconText: "CP"
+                windowTag: "30D"
+                separatorBefore: root.panelHasPillBefore("copilot")
                 stale: root.stale && root.panelShows("copilot")
                 visible: root.panelShows("copilot")
                 tooltipText: "Copilot: " + Math.round(root.copilotPct) + "%" + (root.copilotQuota > 0 ? "\n" + root.copilotUsed + " / " + root.copilotQuota + " requests" : "") + (root.copilotCountdown ? "\nResets: " + root.copilotCountdown : "") + (root.copilotUsername ? "\n" + root.copilotUsername : "")
@@ -2040,6 +2090,8 @@ PlasmoidItem {
                 iconColor: root.deepseekBlue
                 iconSource: Qt.resolvedUrl("../icons/deepseek-color.svg")
                 iconText: "DS"
+                windowTag: "FULL"
+                separatorBefore: root.panelHasPillBefore("deepseek")
                 stale: root.stale && root.panelShows("deepseek")
                 visible: root.panelShows("deepseek")
                 showCost: true
@@ -2052,6 +2104,8 @@ PlasmoidItem {
                 iconColor: root.kimiBlue
                 iconSource: Qt.resolvedUrl("../icons/kimi.svg")
                 iconText: "K"
+                windowTag: "FULL"
+                separatorBefore: root.panelHasPillBefore("kimi")
                 stale: root.stale && root.panelShows("kimi")
                 visible: root.panelShows("kimi")
                 showCost: true
