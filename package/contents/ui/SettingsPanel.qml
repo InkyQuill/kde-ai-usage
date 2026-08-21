@@ -544,7 +544,7 @@ ColumnLayout {
         }
         KeyRow {
             label: "Z.AI Token"
-            placeholder: "or $ZAI_TOKEN"
+            placeholder: "optional with ZCode app login"
             configKey: "zaiToken"
             rowVisible: Plasmoid.configuration.zaiEnabled
         }

@@ -114,10 +114,11 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 - **Requires** — An OpenRouter API key set in widget settings
 
 ### Z.AI
-- **5-hour token quota** — Shows token usage, limit, percentage, and reset countdown
-- **Monthly tools quota** — Tracks the monthly tools quota percentage, remaining tools, and reset countdown
-- **Model details** — Shows model usage details when the Z.AI API returns them
-- **Credential lookup** — Reads the widget setting first, then `$ZAI_TOKEN`, then `~/.config/zai/token`
+- **Coding-plan windows** — GLM Coding Lite/Pro/Max limits with 5-hour and weekly credit windows, countdowns, burn-rate ETA, and period comparison (like Codex)
+- **ZCode auto-detection** — Reads OAuth session tokens from the ZCode app (`~/.zcode/v2/credentials.json`) when no API token is configured; no manual setup needed
+- **Start Plan buckets** — Shows free ZCode Start Plan per-model token buckets with daily resets when the account has one
+- **API-token quotas** — 5-hour token quota, monthly tools quota, and model details with an API token
+- **Credential lookup** — Reads the widget setting first, then `$ZAI_TOKEN`, then `~/.config/zai/token`, then ZCode app credentials
 
 ### GitHub Copilot
 - **Premium request usage** — Shows monthly GitHub Copilot premium request usage
@@ -178,7 +179,8 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 ### For Z.AI Support
 | Dependency | Notes |
 |---|---|
-| Z.AI token | Widget settings, `$ZAI_TOKEN`, or `~/.config/zai/token` |
+| Z.AI token *(optional)* | Widget settings, `$ZAI_TOKEN`, or `~/.config/zai/token` |
+| ZCode app login *(optional)* | Coding-plan limits work without a token if you are logged into the ZCode app; needs `python3` with `cryptography` (or OpenSSL `libcrypto`) to decrypt `~/.zcode/v2/credentials.json` locally |
 
 ### For GitHub Copilot Support
 | Dependency | Notes |
@@ -280,7 +282,7 @@ The widget validates the configured API key against the Mistral API and lists av
 The widget fetches credit usage and limit from the OpenRouter API using the configured key. The popup shows USD spent, the credit limit (if any), and the account label. The usage bar reflects spend as a percentage of the limit; if no limit is set the bar stays empty.
 
 ### Z.AI
-The Z.AI tab calls the Z.AI usage quota endpoint with the configured token. It shows the 5-hour token quota, monthly tools quota, reset countdowns, and model details when the API response includes them. The token is resolved from widget settings → `$ZAI_TOKEN` → `~/.config/zai/token`.
+The Z.AI tab calls `GET https://api.z.ai/api/monitor/usage/quota/limit` with the resolved token. With a coding plan (GLM Coding Lite/Pro/Max) it shows the 5-hour and weekly credit windows with countdowns, ETA, and period comparison; free ZCode Start Plan per-model token buckets are listed below when present. With a plain API token it shows the 5-hour token quota, monthly tools quota, and model details instead. The token is resolved from widget settings → `$ZAI_TOKEN` → `~/.config/zai/token` → ZCode app credentials (decrypted locally from `~/.zcode/v2/credentials.json`, AES-256-GCM with a machine-local key; when that session expires, log into the ZCode app again and the widget picks up the fresh token on the next refresh).
 
 ### GitHub Copilot
 The GitHub Copilot tab reads monthly premium request usage from the GitHub API. It validates the token against the GitHub user endpoint, then fetches premium request usage and scales it against the configured quota, which defaults to 300. The token is resolved from widget settings → `$GITHUB_TOKEN` → `~/.config/github-copilot/token`, and it must be able to read Copilot premium request usage.

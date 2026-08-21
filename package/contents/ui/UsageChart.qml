@@ -128,6 +128,8 @@ Rectangle {
                 return UsageWindows.chartChoices("openai", rootItem.codexSessionAvailable, rootItem.codexWeeklyAvailable);
             if (tab === "claude")
                 return UsageWindows.chartChoices("claude", rootItem.sessionAvailable, rootItem.weeklyAvailable);
+            if (tab === "zai")
+                return UsageWindows.chartChoices("zai", rootItem.zaiSessionAvailable, rootItem.zaiWeeklyAvailable);
             return [];
         }
         anchors.top: parent.top

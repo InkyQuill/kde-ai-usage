@@ -270,6 +270,23 @@ PlasmoidItem {
     property var zaiToolsResetDate: null
     property string zaiToolsCountdown: ""
     property var zaiModels: []
+    // Coding-plan windows (ZCode app OAuth or a plan token): 5h credits + weekly
+    property string zaiTokenSource: ""
+    property bool zaiPlanAvailable: false
+    property bool zaiSessionAvailable: false
+    property real zaiSessionPct: 0
+    property var zaiSessionResetDate: null
+    property string zaiSessionCountdown: ""
+    property var zaiSessionUsed: null
+    property var zaiSessionTotal: null
+    property bool zaiWeeklyAvailable: false
+    property real zaiWeeklyPct: 0
+    property var zaiWeeklyResetDate: null
+    property string zaiWeeklyCountdown: ""
+    property var zaiWeeklyUsed: null
+    property var zaiWeeklyTotal: null
+    // Free ZCode Start Plan token buckets: {name, balances: [{model, used, total, resetMs}]}
+    property var zaiStartPlan: null
     property string zaiError: ""
     // ── GitHub Copilot data ───────────────────────────────────────────────────
     property string _githubToken: ""
@@ -562,13 +579,13 @@ PlasmoidItem {
 
     // Granularity of a given window ID ("" for single-window tabs).
     function _windowGranularity(win) {
-        if (win === "session" || win === "codex_primary")
+        if (win === "session" || win === "codex_primary" || win === "zai_primary")
             return "5h";
 
-        if (win === "day" || win === "codex_day")
+        if (win === "day" || win === "codex_day" || win === "zai_day")
             return "24h";
 
-        if (win === "weekly" || win === "codex_weekly")
+        if (win === "weekly" || win === "codex_weekly" || win === "zai_weekly")
             return "7d";
 
         return "";
@@ -596,7 +613,7 @@ PlasmoidItem {
             return "mistral";
 
         if (tab === "zai")
-            return "zai";
+            return root.zaiPlanAvailable ? (gran === "5h" ? "zai_primary" : gran === "24h" ? "zai_day" : "zai_weekly") : "zai";
 
         if (tab === "copilot")
             return "copilot";
@@ -640,6 +657,12 @@ PlasmoidItem {
         if (root.chartWindow === "codex_weekly")
             return "cw";
 
+        if (root.chartWindow === "zai_primary" || root.chartWindow === "zai_day")
+            return "zs";
+
+        if (root.chartWindow === "zai_weekly")
+            return "zw";
+
         if (root.chartWindow === "kiro")
             return "kr";
 
@@ -666,13 +689,13 @@ PlasmoidItem {
 
     function getChartWindowSize() {
         var win = root.chartWindow;
-        if (win === "session" || win === "codex_primary")
+        if (win === "session" || win === "codex_primary" || win === "zai_primary")
             return 5 * 3.6e+06; // 5 hours in ms
 
-        if (win === "day" || win === "codex_day")
+        if (win === "day" || win === "codex_day" || win === "zai_day")
             return 24 * 3.6e+06; // 24 hours in ms
 
-        if (win === "weekly" || win === "codex_weekly")
+        if (win === "weekly" || win === "codex_weekly" || win === "zai_weekly")
             return 7 * 24 * 3.6e+06; // 7 days in ms
 
         if (win === "kiro" || win === "antigravity" || win === "openrouter" || win === "mistral" || win === "zai" || win === "copilot" || win === "deepseek")
@@ -689,7 +712,7 @@ PlasmoidItem {
         var minT = maxT - winSize;
         var minDate = new Date(minT);
         var maxDate = new Date(maxT);
-        var isHourly = (root.chartWindow === "session" || root.chartWindow === "codex_primary" || root.chartWindow === "day" || root.chartWindow === "codex_day");
+        var isHourly = (root.chartWindow === "session" || root.chartWindow === "codex_primary" || root.chartWindow === "day" || root.chartWindow === "codex_day" || root.chartWindow === "zai_primary" || root.chartWindow === "zai_day");
         if (isHourly) {
             if (minDate.toDateString() === maxDate.toDateString())
                 return Qt.formatDateTime(minDate, "hh:mm") + " - " + Qt.formatDateTime(maxDate, "hh:mm") + " (" + Qt.formatDateTime(maxDate, "MMM d") + ")";
@@ -823,6 +846,37 @@ PlasmoidItem {
                 "t": now,
                 "kr": pct
             });
+        }
+        if (history.length > root.historyLimit)
+            history = history.slice(history.length - root.historyLimit);
+
+        root.usageHistory = history;
+        var json = JSON.stringify(history);
+        Plasmoid.configuration.usageHistory = json;
+        root.autosaveHistory(json);
+    }
+
+    function recordZaiPlanUsage(sessionPct, weeklyPct, sessionIsAvailable, weeklyIsAvailable) {
+        var history = root.usageHistory.slice();
+        var now = new Date().getTime();
+        if (history.length > 0 && now - history[history.length - 1].t < 120000) {
+            var last = history[history.length - 1];
+            if (sessionIsAvailable)
+                last.zs = sessionPct;
+
+            if (weeklyIsAvailable)
+                last.zw = weeklyPct;
+
+            history[history.length - 1] = last;
+        } else {
+            var point = { "t": now };
+            if (sessionIsAvailable)
+                point.zs = sessionPct;
+
+            if (weeklyIsAvailable)
+                point.zw = weeklyPct;
+
+            history.push(point);
         }
         if (history.length > root.historyLimit)
             history = history.slice(history.length - root.historyLimit);
@@ -1321,6 +1375,8 @@ PlasmoidItem {
         root.kiroCountdown = root.formatCountdown(root.kiroResetDate);
         root.zaiTokenCountdown = root.formatCountdown(root.zaiTokenResetDate);
         root.zaiToolsCountdown = root.formatCountdown(root.zaiToolsResetDate);
+        root.zaiSessionCountdown = root.formatCountdown(root.zaiSessionResetDate);
+        root.zaiWeeklyCountdown = root.formatCountdown(root.zaiWeeklyResetDate);
         root.copilotCountdown = root.formatCountdown(root.copilotResetDate);
     }
 
@@ -2661,6 +2717,10 @@ PlasmoidItem {
                 root._zaiToken = "";
                 root.zaiKeyValid = false;
                 root.zaiError = "";
+                root.zaiPlanAvailable = false;
+                root.zaiSessionAvailable = false;
+                root.zaiWeeklyAvailable = false;
+                root.zaiStartPlan = null;
                 root.errorMsg = "Z.AI: no token configured";
                 root.stale = root.lastUpdate !== "";
                 return ;
@@ -2677,7 +2737,26 @@ PlasmoidItem {
                 }
                 root._zaiToken = res.zaiToken || "";
                 root.zaiKeyValid = res.keyValid === true;
+                root.zaiTokenSource = res.tokenSource || "api";
                 root.zaiLevel = res.level || "";
+
+                // Coding-plan credit windows (ZCode app login or plan token)
+                var plan = UsageWindows.normalizeZai(res.quota || {});
+                root.zaiSessionAvailable = plan.session.available;
+                root.zaiSessionPct = Math.max(0, Math.min(100, plan.session.pct));
+                root.zaiSessionResetDate = root.normalizedResetDate(plan.session.resetAt);
+                root.zaiSessionUsed = plan.session.used !== undefined ? plan.session.used : null;
+                root.zaiSessionTotal = plan.session.total !== undefined ? plan.session.total : null;
+                root.zaiWeeklyAvailable = plan.weekly.available;
+                root.zaiWeeklyPct = Math.max(0, Math.min(100, plan.weekly.pct));
+                root.zaiWeeklyResetDate = root.normalizedResetDate(plan.weekly.resetAt);
+                root.zaiWeeklyUsed = plan.weekly.used !== undefined ? plan.weekly.used : null;
+                root.zaiWeeklyTotal = plan.weekly.total !== undefined ? plan.weekly.total : null;
+                root.zaiPlanAvailable = plan.session.available || plan.weekly.available;
+                root.zaiStartPlan = res.startPlan !== undefined ? res.startPlan : null;
+                root.ensureAvailableChartWindow("zai", root.zaiSessionAvailable, root.zaiWeeklyAvailable);
+
+                // Legacy API-token quotas
                 root.zaiTokenPct = Math.max(0, Math.min(100, res.tokenPct || 0));
                 root.zaiTokenUsed = res.tokenUsed !== undefined && res.tokenUsed !== null ? res.tokenUsed : null;
                 root.zaiTokenLimit = res.tokenLimit !== undefined && res.tokenLimit !== null ? res.tokenLimit : null;
@@ -2693,7 +2772,10 @@ PlasmoidItem {
                 root.lastUpdate = Qt.formatTime(new Date(), "hh:mm");
                 root._offline = false;
                 offlineRetryTimer.stop();
-                root.recordZaiUsage(root.zaiTokenPct);
+                if (root.zaiPlanAvailable)
+                    root.recordZaiPlanUsage(root.zaiSessionPct, root.zaiWeeklyPct, root.zaiSessionAvailable, root.zaiWeeklyAvailable);
+                else
+                    root.recordZaiUsage(root.zaiTokenPct);
             } catch (e) {
                 root.zaiError = "Z.AI: parse error";
                 root.errorMsg = "Z.AI: parse error";
@@ -3045,13 +3127,33 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                pct: root.zaiTokenPct
+                // Prefer the coding-plan session window; fall back to the API-token quota.
+                pct: root.zaiSessionAvailable ? root.zaiSessionPct : root.zaiTokenPct
                 iconColor: root.zaiBlue
                 iconSource: Qt.resolvedUrl("../icons/zai.svg")
                 iconText: "Z"
                 stale: root.stale && root.panelShows("zai")
                 visible: root.panelShows("zai")
-                tooltipText: "Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0 ? "\n" + root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens" : "") + (root.zaiTokenCountdown ? "\nToken reset: " + root.zaiTokenCountdown : "") + "\nTools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsRemaining > 0 ? "\nTools left: " + root.zaiToolsRemaining : "")
+                tooltipText: "Z.AI" + (root.zaiPlanAvailable ? (root.zaiSessionAvailable ? "\nCoding plan 5h: " + Math.round(100 - root.zaiSessionPct) + "% left" : "") + (root.zaiWeeklyAvailable ? "\nCoding plan weekly: " + Math.round(100 - root.zaiWeeklyPct) + "% left" : "") : (root.zaiKeyValid ? "\nTokens: " + Math.round(root.zaiTokenPct) + "%\nTools: " + Math.round(root.zaiToolsPct) + "%" : "\nNot connected")) + (root.zaiStartPlan && root.zaiStartPlan.balances && root.zaiStartPlan.balances.length > 0 ? "\nStart plan: " + root.zaiStartPlan.balances.length + " model buckets" : "")
+            }
+
+            Rectangle {
+                visible: root.panelShows("zai") && root.zaiSessionAvailable && root.zaiWeeklyAvailable
+                width: 1
+                height: 14
+                color: Qt.rgba(1, 1, 1, 0.16)
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            PanelSlot {
+                pct: root.zaiWeeklyPct
+                iconColor: root.zaiBlue
+                iconSource: Qt.resolvedUrl("../icons/zai.svg")
+                iconText: "7D"
+                stale: root.stale && root.panelShows("zai")
+                visible: root.panelShows("zai") && root.zaiWeeklyAvailable
+                showCost: false
+                tooltipText: "Z.AI coding plan weekly: " + Math.round(100 - root.zaiWeeklyPct) + "% left"
             }
 
             PanelSlot {

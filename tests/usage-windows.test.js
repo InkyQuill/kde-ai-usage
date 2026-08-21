@@ -104,3 +104,56 @@ test("offers session day and weekly charts when both windows exist", () => {
         { id: "weekly", label: "7D" }
     ]);
 });
+
+test("normalizes Z.AI coding-plan credit windows by reset time", () => {
+    const result = UsageWindows.normalizeZai({
+        limits: [
+            { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 60000, currentValue: 1861, remaining: 58139, percentage: 3, nextResetTime: 1787741389998 },
+            { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 12000, currentValue: 1861, remaining: 10139, percentage: 15, nextResetTime: 1787155394201 }
+        ]
+    });
+
+    assert.deepEqual(result.session, { available: true, pct: 15, used: 1861, total: 12000, resetAt: 1787155394201 });
+    assert.deepEqual(result.weekly, { available: true, pct: 3, used: 1861, total: 60000, resetAt: 1787741389998 });
+});
+
+test("maps a single Z.AI credit window to the session slot only", () => {
+    const result = UsageWindows.normalizeZai({
+        limits: [
+            { type: "CREDIT_LIMIT", usage: 12000, currentValue: 12000, remaining: 0, percentage: 100, nextResetTime: 1787155394201 }
+        ]
+    });
+
+    assert.equal(result.session.available, true);
+    assert.equal(result.session.pct, 100);
+    assert.equal(result.weekly.available, false);
+});
+
+test("ignores non-credit and malformed Z.AI limit entries", () => {
+    const result = UsageWindows.normalizeZai({
+        limits: [
+            { type: "TOKENS_LIMIT", percentage: 40, nextResetTime: 1787155394201 },
+            { type: "CREDIT_LIMIT", usage: 100, currentValue: 10 },
+            { type: "CREDIT_LIMIT", percentage: null, nextResetTime: 1 }
+        ]
+    });
+
+    assert.equal(result.session.available, false);
+    assert.equal(result.weekly.available, false);
+});
+
+test("handles empty Z.AI quota payloads", () => {
+    assert.deepEqual(UsageWindows.normalizeZai({}), { session: { available: false, pct: 0, resetAt: null }, weekly: { available: false, pct: 0, resetAt: null } });
+    assert.equal(UsageWindows.normalizeZai(null).session.available, false);
+});
+
+test("offers Z.AI plan charts and keeps the legacy 30d fallback", () => {
+    assert.deepEqual(UsageWindows.chartChoices("zai", true, true), [
+        { id: "zai_primary", label: "5H" },
+        { id: "zai_day", label: "24H" },
+        { id: "zai_weekly", label: "7D" }
+    ]);
+    assert.deepEqual(UsageWindows.chartChoices("zai", false, false), [
+        { id: "zai", label: "30D" }
+    ]);
+});

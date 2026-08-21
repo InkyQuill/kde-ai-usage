@@ -114,8 +114,83 @@ function normalizeClaude(payload) {
     return result;
 }
 
+// Z.AI coding plans report CREDIT_LIMIT entries where `usage` is the window
+// total, `currentValue` the spent amount, and `percentage` the utilization.
+// The unit/number enums differ between tiers, so windows are classified by
+// reset time instead: the soonest reset is the ~5h session window, the latest
+// is the weekly one.
+function normalizeZaiWindow(item) {
+    if (!item || !finiteNumber(item.percentage))
+        return null;
+
+    return {
+        available: true,
+        pct: item.percentage,
+        used: finiteNumber(item.currentValue) ? item.currentValue : null,
+        total: finiteNumber(item.usage) ? item.usage : null,
+        resetAt: finiteNumber(item.nextResetTime) ? item.nextResetTime : null
+    };
+}
+
+function normalizeZai(payload) {
+    var result = {
+        session: unavailableWindow(),
+        weekly: unavailableWindow()
+    };
+    var limits = payload && payload.limits || [];
+    var windows = [];
+    for (var i = 0; i < limits.length; i++) {
+        if ((limits[i] || {}).type !== "CREDIT_LIMIT")
+            continue;
+
+        var window = normalizeZaiWindow(limits[i]);
+        if (window)
+            windows.push(window);
+    }
+
+    windows.sort(function (a, b) {
+        return (a.resetAt === null ? Infinity : a.resetAt) - (b.resetAt === null ? Infinity : b.resetAt);
+    });
+    if (windows.length > 0)
+        result.session = windows[0];
+
+    if (windows.length > 1)
+        result.weekly = windows[windows.length - 1];
+
+    return result;
+}
+
 function chartChoices(provider, sessionAvailable, weeklyAvailable) {
     var result = [];
+    if (provider === "zai") {
+        if (sessionAvailable) {
+            result.push({
+                id: "zai_primary",
+                label: "5H"
+            });
+            result.push({
+                id: "zai_day",
+                label: "24H"
+            });
+        }
+
+        if (weeklyAvailable) {
+            result.push({
+                id: "zai_weekly",
+                label: "7D"
+            });
+        }
+
+        // Without plan windows keep the legacy 30-day API-token trend.
+        if (result.length === 0)
+            result.push({
+                id: "zai",
+                label: "30D"
+            });
+
+        return result;
+    }
+
     if (sessionAvailable) {
         result.push({
             id: provider === "openai" ? "codex_primary" : "session",
@@ -141,6 +216,7 @@ if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         chartChoices: chartChoices,
         normalizeClaude: normalizeClaude,
-        normalizeCodex: normalizeCodex
+        normalizeCodex: normalizeCodex,
+        normalizeZai: normalizeZai
     };
 }
