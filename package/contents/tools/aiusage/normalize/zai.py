@@ -1,7 +1,7 @@
 import datetime
 import math
 
-from ..contract import flat_window, jround, monthly_window, num, pct_clamp, provider_base, provider_error
+from ..contract import flat_window, jround, monthly_window, num, pct_clamp, provider_base, provider_error, rolling_windows
 
 # Anything at or above this, read as a duration, would be more than 31 years —
 # so it is an absolute epoch instead. Live z.ai responses put an absolute
@@ -58,6 +58,25 @@ def _reset_at(value, now):
     return math.floor(now + ms / 1000)
 
 
+def _credit_window(w, now):
+    """One CREDIT_LIMIT window from the provider, shaped like `token` above."""
+    if not isinstance(w, dict):
+        return {"available": False, "pct": 0, "used": None, "total": None, "resetAt": 0}
+    return {
+        "available": True,
+        "pct": pct_clamp(num(w.get("pct"))),
+        "used": num(w.get("used")) if w.get("used") is not None else None,
+        "total": num(w.get("total")) if w.get("total") is not None else None,
+        "resetAt": _reset_at(w.get("resetMs"), now),
+    }
+
+
+def _credit_detail(w):
+    if w["used"] is None or w["total"] is None:
+        return ""
+    return f"{_compact(w['used'])} / {_compact(w['total'])} credits"
+
+
 def normalize_zai(raw):
     now = raw["now"]
     res = raw["inputs"].get("usage") or {}
@@ -87,16 +106,38 @@ def normalize_zai(raw):
     )
     tools_detail = f"{num(res.get('toolsRemaining'))} remaining" if res.get("toolsRemaining") is not None else ""
 
+    credits_raw = res.get("credits") if isinstance(res.get("credits"), dict) else {}
+    credit_session = _credit_window(credits_raw.get("session"), now)
+    credit_weekly = _credit_window(credits_raw.get("weekly"), now)
+    # Coding plans report their quotas as credits; when they are present they
+    # are the binding limits, and the token windows of a plain API account
+    # would only repeat them as zeros.
+    plan_windows = credit_session["available"] or credit_weekly["available"]
+    if credit_session["available"]:
+        summary_pct = credit_session["pct"]
+    elif credit_weekly["available"]:
+        summary_pct = credit_weekly["pct"]
+    else:
+        summary_pct = token_pct
+
     r = provider_base("zai", "Z.AI", "#126ef4", now)
-    r["summary"] = {"pct": token_pct, "text": f"{jround(token_pct)}%", "detail": res.get("level") or "", "hasChart": True}
+    r["summary"] = {"pct": summary_pct, "text": f"{jround(summary_pct)}%", "detail": res.get("level") or "", "hasChart": True}
     today = res.get("today") if isinstance(res.get("today"), dict) else None
     today_detail = _today_detail(today) if today else ""
 
-    r["quotaWindows"] = [
-        flat_window("zai_tokens", "5-hour tokens", token_pct, token_reset, token_detail, True),
-        flat_window("zai_tokens_long", "7-day tokens", token2_pct, token2_reset, "", True),
-        flat_window("zai_tools", "Monthly tools", tools_pct, tools_reset, tools_detail, True),
-    ]
+    r["quotaWindows"] = []
+    if credit_session["available"]:
+        r["quotaWindows"].append(
+            flat_window("zai_session", "5-hour credits", credit_session["pct"], credit_session["resetAt"], _credit_detail(credit_session), True)
+        )
+    if credit_weekly["available"]:
+        r["quotaWindows"].append(
+            flat_window("zai_weekly", "Weekly credits", credit_weekly["pct"], credit_weekly["resetAt"], _credit_detail(credit_weekly), True)
+        )
+    if not plan_windows:
+        r["quotaWindows"].append(flat_window("zai_tokens", "5-hour tokens", token_pct, token_reset, token_detail, True))
+        r["quotaWindows"].append(flat_window("zai_tokens_long", "7-day tokens", token2_pct, token2_reset, "", True))
+    r["quotaWindows"].append(flat_window("zai_tools", "Monthly tools", tools_pct, tools_reset, tools_detail, True))
     if today_detail:
         # Consumption so far, not a share of anything, so it carries a value
         # instead of a meter. The reset column holds the date change, so a
@@ -105,17 +146,59 @@ def normalize_zai(raw):
         r["quotaWindows"].append(
             flat_window("zai_today", _today_label(today), 0, num(today.get("rollsOverAt")), today_detail, False, note=_today_note(today))
         )
+    start_plan = res.get("startPlan") if isinstance(res.get("startPlan"), dict) else None
+    raw_balances = start_plan.get("balances") if start_plan is not None else None
+    start_balances = [
+        {
+            "model": b.get("model") or "model",
+            "used": num(b.get("used")),
+            "total": num(b.get("total")),
+            "resetAt": _reset_at(b.get("resetMs"), now),
+        }
+        for b in (raw_balances if isinstance(raw_balances, list) else [])
+        if isinstance(b, dict)
+    ]
+    for i, b in enumerate(start_balances):
+        # Same shape as the day total: a consumed amount with a reset horizon,
+        # not a share of a meter. These buckets refill daily, which `note`
+        # says because `resets daily` otherwise reads as an assumption.
+        pct = (b["used"] / b["total"]) * 100 if b["total"] > 0 else 0
+        detail = f"{_compact(b['used'])} / {_compact(b['total'])} tokens"
+        r["quotaWindows"].append(flat_window(f"zai_start_{i}", b["model"], pct, b["resetAt"], detail, False, note="resets daily"))
+    first_pct = credit_session["pct"] if credit_session["available"] else token_pct
+    second_pct = credit_weekly["pct"] if credit_weekly["available"] else token2_pct
+    second_kind = "credits (weekly)" if credit_weekly["available"] else "tokens (7d)"
     r["slots"] = [
-        {"pct": token_pct, "color": "#126ef4", "text": None, "tooltip": f"Z.AI tokens (5h): {jround(token_pct)}%"},
-        {"pct": token2_pct, "color": "#3b82f6", "text": None, "tooltip": f"Z.AI tokens (7d): {jround(token2_pct)}%"},
+        {"pct": first_pct, "color": "#126ef4", "text": None, "tooltip": f"Z.AI credits (5h): {jround(first_pct)}%"},
+        {"pct": second_pct, "color": "#3b82f6", "text": None, "tooltip": f"Z.AI {second_kind}: {jround(second_pct)}%"},
         {"pct": tools_pct, "color": "#60a5fa", "text": None, "tooltip": f"Z.AI tools: {jround(tools_pct)}%"},
     ]
-    r["chartWindows"] = monthly_window("zai", "za", False)
-    r["historyValues"] = {"za": token_pct}
+    if plan_windows:
+        # The same rolling windows Claude and Codex chart, on the credit
+        # series, so the ETA and comparison machinery works unchanged.
+        r["chartWindows"] = rolling_windows("zai_primary", "zai_day", "zai_weekly", "zs", "zw", credit_session, credit_weekly)
+        r["historyValues"] = {
+            **({"zs": credit_session["pct"]} if credit_session["available"] else {}),
+            **({"zw": credit_weekly["pct"]} if credit_weekly["available"] else {}),
+        }
+    else:
+        r["chartWindows"] = monthly_window("zai", "za", False)
+        r["historyValues"] = {"za": token_pct}
     r["details"] = {
         "hasKey": res.get("hasKey") is True,
         "keyValid": res.get("keyValid") is True,
+        "tokenSource": res.get("tokenSource") or "api",
         "level": res.get("level") or "",
+        "credits": {
+            "available": plan_windows,
+            "session": credit_session,
+            "weekly": credit_weekly,
+        },
+        "startPlan": {
+            "available": start_plan is not None,
+            "name": (start_plan or {}).get("name") or "",
+            "balances": start_balances,
+        },
         "token": {
             "pct": token_pct,
             "used": num(res.get("tokenUsed")) if res.get("tokenUsed") is not None else None,

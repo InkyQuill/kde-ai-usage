@@ -20,12 +20,16 @@ failures=0
 checks=0
 
 # resolve <provider-function> — runs the real resolver against a clean HOME and
-# whatever variables the caller exported, and prints what it found.
+# whatever variables the caller exported, and prints what it found. Resolvers
+# that also report where the key came from return (key, source, jwt); only the
+# key takes part in the precedence assertion, the tuple cases below check the
+# rest explicitly.
 resolve() {
     local fn="$1"
     HOME="$tmp/home" PYTHONPATH="$repo/package/contents/tools" python3 -c "
 from aiusage.providers.${fn%%:*} import ${fn##*:}
-print(${fn##*:}())"
+r = ${fn##*:}()
+print(r[0] if isinstance(r, tuple) else r)"
 }
 
 # expect <description> <expected> <provider-function>
@@ -89,6 +93,37 @@ fresh_home
 mkdir -p "$tmp/home/.config/glm-acp-agent"
 printf '{"z_ai_api_key": null}\n' >"$tmp/home/.config/glm-acp-agent/credentials.json"
 expect "a null key is treated as absent" "" "zai:_zai_key"
+
+# The ZCode desktop app keeps its whole session in plain JSON under ~/.zcode;
+# a logged-in machine must work with nothing pasted anywhere, and the provider
+# must remember where the key came from — the Start Plan balance endpoint is
+# only reachable with the app's own JWT.
+fresh_home
+mkdir -p "$tmp/home/.zcode/v2"
+printf '{"oauth:zai:access_token": "from-zcode-app", "zcodejwttoken": "app-jwt"}\n' \
+    >"$tmp/home/.zcode/v2/credentials.json"
+expect "falls back to the ZCode app session" "from-zcode-app" "zai:_zai_key"
+
+checks=$((checks + 1))
+zcode_tuple="$(HOME="$tmp/home" PYTHONPATH="$repo/package/contents/tools" python3 -c '
+from aiusage.providers.zai import _zai_key
+print(_zai_key())')"
+if [ "$zcode_tuple" != "('from-zcode-app', 'zcode', 'app-jwt')" ]; then
+    printf 'FAIL the app session carries its source and JWT\n  want: %s\n  got:  %s\n' \
+        "('from-zcode-app', 'zcode', 'app-jwt')" "$zcode_tuple" >&2
+    failures=$((failures + 1))
+fi
+
+fresh_home
+mkdir -p "$tmp/home/.zcode/v2" "$tmp/home/.config/zai"
+printf '{"oauth:zai:access_token": "from-zcode-app"}\n' >"$tmp/home/.zcode/v2/credentials.json"
+printf 'from-config-file\n' >"$tmp/home/.config/zai/token"
+expect "an explicit token still beats the app session" "from-config-file" "zai:_zai_key"
+
+fresh_home
+mkdir -p "$tmp/home/.zcode/v2"
+printf '{"zcodejwttoken": "app-jwt-only"}\n' >"$tmp/home/.zcode/v2/credentials.json"
+expect "a ZCode session without an access token is absent" "" "zai:_zai_key"
 
 # ── Moonshot / Kimi ─────────────────────────────────────────────────────────
 

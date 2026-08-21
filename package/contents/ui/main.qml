@@ -263,6 +263,24 @@ PlasmoidItem {
     property bool zaiHasKey: false
     property bool zaiKeyValid: false
     property string zaiLevel: ""
+    property string zaiTokenSource: "api"
+    // Coding-plan credit windows (ZCode app login or a plan token): 5h + weekly
+    property bool zaiPlanAvailable: false
+    property bool zaiSessionAvailable: false
+    property real zaiSessionPct: 0
+    property var zaiSessionResetDate: null
+    property string zaiSessionCountdown: ""
+    property var zaiSessionUsed: null
+    property var zaiSessionTotal: null
+    property bool zaiWeeklyAvailable: false
+    property real zaiWeeklyPct: 0
+    property var zaiWeeklyResetDate: null
+    property string zaiWeeklyCountdown: ""
+    property var zaiWeeklyUsed: null
+    property var zaiWeeklyTotal: null
+    // Free ZCode Start Plan token buckets: [{model, used, total, resetAt}]
+    property var zaiStartPlanBalances: []
+    property string zaiStartPlanName: ""
     property real zaiTokenPct: 0
     property var zaiTokenUsed: null
     property var zaiTokenLimit: null
@@ -962,6 +980,8 @@ PlasmoidItem {
         root.kiroCountdown = root.formatCountdown(root.kiroResetDate);
         root.zaiTokenCountdown = root.formatCountdown(root.zaiTokenResetDate);
         root.zaiToolsCountdown = root.formatCountdown(root.zaiToolsResetDate);
+        root.zaiSessionCountdown = root.formatCountdown(root.zaiSessionResetDate);
+        root.zaiWeeklyCountdown = root.formatCountdown(root.zaiWeeklyResetDate);
         root.copilotCountdown = root.formatCountdown(root.copilotResetDate);
     }
 
@@ -1357,6 +1377,24 @@ PlasmoidItem {
         root.zaiHasKey = d.hasKey === true;
         root.zaiKeyValid = d.keyValid === true;
         root.zaiLevel = d.level || "";
+        root.zaiTokenSource = d.tokenSource || "api";
+        var credits = d.credits || {};
+        var session = credits.session || {};
+        var weekly = credits.weekly || {};
+        root.zaiPlanAvailable = credits.available === true;
+        root.zaiSessionAvailable = session.available === true;
+        root.zaiSessionPct = session.pct || 0;
+        root.zaiSessionResetDate = root.dateFromEpoch(session.resetAt);
+        root.zaiSessionUsed = session.used === undefined ? null : session.used;
+        root.zaiSessionTotal = session.total === undefined ? null : session.total;
+        root.zaiWeeklyAvailable = weekly.available === true;
+        root.zaiWeeklyPct = weekly.pct || 0;
+        root.zaiWeeklyResetDate = root.dateFromEpoch(weekly.resetAt);
+        root.zaiWeeklyUsed = weekly.used === undefined ? null : weekly.used;
+        root.zaiWeeklyTotal = weekly.total === undefined ? null : weekly.total;
+        var startPlan = d.startPlan || {};
+        root.zaiStartPlanName = startPlan.available === true ? (startPlan.name || "Start Plan") : "";
+        root.zaiStartPlanBalances = startPlan.available === true ? (startPlan.balances || []) : [];
         var token = d.token || {};
         var tools = d.tools || {};
         root.zaiTokenPct = token.pct || 0;
@@ -1531,13 +1569,32 @@ PlasmoidItem {
             if (root.grokError)
                 lines.push("⚠ " + root.grokError);
         } else if (tab === "zai") {
-            lines.push("Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenCountdown ? " (" + root.zaiTokenCountdown + ")" : ""));
-            if (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0)
-                lines.push(root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens");
+            if (root.zaiPlanAvailable) {
+                if (root.zaiSessionAvailable) {
+                    lines.push("Z.AI credits (5h): " + Math.round(root.zaiSessionPct) + "%" + (root.zaiSessionCountdown ? " (" + root.zaiSessionCountdown + ")" : ""));
+                    if (root.zaiSessionUsed !== null && root.zaiSessionTotal !== null && root.zaiSessionTotal > 0)
+                        lines.push(root.zaiSessionUsed + " / " + root.zaiSessionTotal + " credits");
+                }
+                if (root.zaiWeeklyAvailable) {
+                    lines.push("Z.AI credits (weekly): " + Math.round(root.zaiWeeklyPct) + "%" + (root.zaiWeeklyCountdown ? " (" + root.zaiWeeklyCountdown + ")" : ""));
+                    if (root.zaiWeeklyUsed !== null && root.zaiWeeklyTotal !== null && root.zaiWeeklyTotal > 0)
+                        lines.push(root.zaiWeeklyUsed + " / " + root.zaiWeeklyTotal + " credits");
+                }
+            } else {
+                lines.push("Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenCountdown ? " (" + root.zaiTokenCountdown + ")" : ""));
+                if (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0)
+                    lines.push(root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens");
+            }
 
             lines.push("Tools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsCountdown ? " (" + root.zaiToolsCountdown + ")" : ""));
             if (root.zaiToolsRemaining > 0)
                 lines.push("Tools left: " + root.zaiToolsRemaining);
+
+            if (root.zaiStartPlanBalances.length > 0) {
+                lines.push((root.zaiStartPlanName !== "" ? root.zaiStartPlanName : "Start Plan") + ":");
+                for (var si = 0; si < root.zaiStartPlanBalances.length; si++)
+                    lines.push("  " + root.zaiStartPlanBalances[si].model + ": " + root.zaiStartPlanBalances[si].used + " / " + root.zaiStartPlanBalances[si].total + " tokens");
+            }
 
             if (root.zaiLevel)
                 lines.push("Level: " + root.zaiLevel);
@@ -1958,13 +2015,14 @@ PlasmoidItem {
             }
 
             PanelSlot {
-                pct: root.zaiTokenPct
+                // Prefer the coding-plan session window; fall back to the API-token quota.
+                pct: root.zaiPlanAvailable && root.zaiSessionAvailable ? root.zaiSessionPct : (root.zaiPlanAvailable && root.zaiWeeklyAvailable ? root.zaiWeeklyPct : root.zaiTokenPct)
                 iconColor: root.zaiBlue
                 iconSource: Qt.resolvedUrl("../icons/zai.svg")
                 iconText: "Z"
                 stale: root.stale && root.panelShows("zai")
                 visible: root.panelShows("zai")
-                tooltipText: "Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0 ? "\n" + root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens" : "") + (root.zaiTokenCountdown ? "\nToken reset: " + root.zaiTokenCountdown : "") + "\nTools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsRemaining > 0 ? "\nTools left: " + root.zaiToolsRemaining : "")
+                tooltipText: (root.zaiPlanAvailable ? ("Z.AI credits (5h): " + Math.round(root.zaiSessionPct) + "%" + (root.zaiSessionCountdown ? "\nResets in " + root.zaiSessionCountdown : "") + "\nWeekly: " + Math.round(root.zaiWeeklyPct) + "%") : ("Z.AI tokens: " + Math.round(root.zaiTokenPct) + "%" + (root.zaiTokenUsed !== null && root.zaiTokenLimit !== null && root.zaiTokenLimit > 0 ? "\n" + root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens" : "") + (root.zaiTokenCountdown ? "\nToken reset: " + root.zaiTokenCountdown : ""))) + "\nTools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsRemaining > 0 ? "\nTools left: " + root.zaiToolsRemaining : "")
             }
 
             PanelSlot {

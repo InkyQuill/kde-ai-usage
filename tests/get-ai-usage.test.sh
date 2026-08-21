@@ -287,6 +287,26 @@ check zai-invalid-token "passes the token error through" '
     (.ok | not) and .error == "Z.AI: Invalid Z.AI token"'
 check zai-missing "reports an unconfigured token" '
     (.ok | not) and .error == "Z.AI: no token configured"'
+# Coding plans (GLM Coding Lite/Pro/Max) report their quotas as CREDIT_LIMIT
+# entries, told apart by reset time because the unit enums differ per tier.
+# When they are present they are the binding windows, and the plain API-token
+# token windows would only repeat them as zeros.
+check zai-credits "charts coding-plan credit windows instead of token quotas" '
+    .ok and .details.tokenSource == "zcode"
+    and .details.credits.available
+    and (.quotaWindows | map(.key)) == ["zai_session", "zai_weekly", "zai_tools", "zai_start_0"]
+    and .historyValues == {zs: 40, zw: 65}
+    and ([.chartWindows[].id]) == ["zai_primary", "zai_day", "zai_weekly"]'
+check zai-credits "summarizes by the session credit window" '
+    .summary.pct == 40 and .details.credits.session.used == 48 and .details.credits.session.total == 120
+    and .quotaWindows[0].detail == "48 / 120 credits"'
+check zai-credits "reads a weekly credit reset as the absolute epoch it is" '
+    .details.credits.weekly.pct == 65 and .details.credits.weekly.resetAt == 1785086400'
+check zai-credits "lists Start Plan buckets as values with a reset horizon" '
+    .details.startPlan.available and .details.startPlan.name == "Start Plan"
+    and .details.startPlan.balances[0].model == "GLM-4.6"
+    and .details.startPlan.balances[0].resetAt == 1785050000
+    and (.quotaWindows[3] | (.showMeter | not) and .detail == "12.00K / 45.00K tokens" and .note == "resets daily")'
 
 # ── Copilot ─────────────────────────────────────────────────────────────────
 
@@ -408,6 +428,68 @@ if ! printf '%s' "$defaults" | jq -e '(.providers | length) == 0 and .active == 
     failures=$((failures + 1))
 fi
 
+# ── ZCode app credentials: auto-detected coding-plan session ────────────────
+# A machine logged into the ZCode desktop app holds a working credential in
+# plain JSON; the provider must find it with nothing pasted into settings,
+# read the coding-plan CREDIT_LIMIT windows, and reach the Start Plan balance
+# endpoint with the app's own JWT. The fake tokens must not survive into the
+# envelope.
+
+mkdir -p "$TEST_TMP/zcode-home/.zcode/v2"
+cat >"$TEST_TMP/zcode-home/.zcode/v2/credentials.json" <<'JSON'
+{"oauth:zai:access_token": "zcode-access-cred", "zcodejwttoken": "zcode-jwt-cred",
+ "oauth:active_provider": "zai"}
+JSON
+# No "zai" key here: the point of the scenario is that the app's own session
+# is enough, so nothing must short-circuit the credential fallback chain.
+cat >"$TEST_TMP/zcode-config.json" <<'JSON'
+{"providers": {"claude": false, "antigravity": false, "openai": false, "kiro": false,
+               "mistral": false, "openrouter": false, "grok": false, "zai": true}}
+JSON
+cat >"$TEST_TMP/zai-credits.json" <<'JSON'
+{"success":true,"data":{"level":"lite","limits":[
+  {"type":"CREDIT_LIMIT","percentage":40,"currentValue":48,"usage":120,"nextResetTime":3600000},
+  {"type":"CREDIT_LIMIT","percentage":65,"currentValue":390,"usage":600,"nextResetTime":1785086400000},
+  {"type":"TIME_LIMIT","percentage":20,"remaining":80,"nextResetTime":7200000,"usageDetails":[]}]}}
+JSON
+cat >"$TEST_TMP/zcode-balance.json" <<'JSON'
+{"data":{"plans":[{"name":"Start Plan","status":"active"},{"name":"Old plan","status":"expired"}],
+ "balances":[{"show_name":"GLM-4.6","used_units":12000,"total_units":45000,"period_end":1785050000},
+             {"show_name":"Empty","used_units":0,"total_units":0,"period_end":1785050000}]}}
+JSON
+
+zcode_backend() {
+    HOME="$TEST_TMP/zcode-home" \
+        WIDGET_ZCODE_CREDENTIALS="$TEST_TMP/zcode-home/.zcode/v2/credentials.json" \
+        AI_USAGE_CONFIG="$TEST_TMP/zcode-config.json" \
+        AI_USAGE_CACHE_DIR="$TEST_TMP/cache" \
+        ZAI_RESPONSE_FILE="$TEST_TMP/zai-credits.json" \
+        ZCODE_BALANCE_RESPONSE_FILE="$TEST_TMP/zcode-balance.json" \
+        "$BACKEND" "$@"
+}
+
+checks=$((checks + 1))
+zcode_output="$(zcode_backend --provider zai)"
+if ! printf '%s' "$zcode_output" | jq -e '
+    .providers[0].ok
+    and .providers[0].details.tokenSource == "zcode"
+    and .providers[0].details.credits.available
+    and .providers[0].details.credits.session.pct == 40
+    and .providers[0].details.credits.weekly.pct == 65
+    and .providers[0].historyValues == {zs: 40, zw: 65}
+    and .providers[0].details.startPlan.available
+    and .providers[0].details.startPlan.name == "Start Plan"
+    and (.providers[0].details.startPlan.balances | length) == 1' >/dev/null 2>&1; then
+    printf 'FAIL: a ZCode app login must yield the coding-plan windows\n  got: %s\n' "$zcode_output" >&2
+    failures=$((failures + 1))
+fi
+
+checks=$((checks + 1))
+if printf '%s' "$zcode_output" | jq -e 'tojson | test("zcode-access-cred|zcode-jwt-cred")' >/dev/null 2>&1; then
+    printf 'FAIL: ZCode app credentials must never reach a frontend\n  got: %s\n' "$zcode_output" >&2
+    failures=$((failures + 1))
+fi
+
 # ── Credentials from the environment are stripped ───────────────────────────
 # A token pasted into the widget's settings field with a trailing newline is
 # passed straight through as WIDGET_*. urllib rejects such a header value with
@@ -428,6 +510,21 @@ print(repr(resolve_key("WIDGET_TEST_KEY", "", )))
 ')"
     if [ "$stripped" != "'secret-value'" ]; then
         printf 'FAIL: a trailing newline must not survive into a credential\n  got: %s\n' "$stripped" >&2
+        failures=$((failures + 1))
+    fi
+
+    checks=$((checks + 1))
+    # The quota endpoint can reject an expired ZCode app session while the
+    # account is fine; the wording must point at the app, not at a token the
+    # user never pasted.
+    expired_msg="$(HOME="$TEST_TMP/zcode-home" \
+        WIDGET_ZCODE_CREDENTIALS="$TEST_TMP/zcode-home/.zcode/v2/credentials.json" \
+        PYTHONPATH="$ROOT/package/contents/tools" "$PY" -c '
+from aiusage.providers import zai
+zai.fetch_json = lambda *a, **k: type("R", (), {"status": 401, "body": ""})()
+print(zai.get_zai_usage().get("error", ""))')"
+    if [ "$expired_msg" != "ZCode session expired — log in again in the ZCode app" ]; then
+        printf 'FAIL: an expired ZCode session must say so\n  got: %s\n' "$expired_msg" >&2
         failures=$((failures + 1))
     fi
 fi

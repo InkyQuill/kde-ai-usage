@@ -446,7 +446,7 @@ ColumnLayout {
         KeyField {
             shell: page.shell
             label: "Z.AI"
-            placeholder: "or $ZAI_TOKEN"
+            placeholder: "optional with ZCode app login"
             settingKey: "zai"
         }
         KeyField {
