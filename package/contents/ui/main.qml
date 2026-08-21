@@ -1934,9 +1934,9 @@ PlasmoidItem {
 
             PanelSlot {
                 pct: root.weeklyPct
-                iconColor: root.weeklyColor
+                iconColor: root.claudeOrange
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
-                iconTint: root.weeklyColor
+                iconTint: root.claudeOrange
                 iconText: "7D"
                 windowTag: "7D"
                 stale: root.stale && root.panelShows("claude")
@@ -2003,7 +2003,7 @@ PlasmoidItem {
                 pct: root.codexWeeklyPct
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
-                iconTint: root.weeklyColor
+                iconTint: root.openaiGreen
                 iconText: "7D"
                 windowTag: "7D"
                 stale: root.stale && root.panelShows("openai")
