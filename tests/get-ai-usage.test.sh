@@ -490,6 +490,35 @@ if printf '%s' "$zcode_output" | jq -e 'tojson | test("zcode-access-cred|zcode-j
     failures=$((failures + 1))
 fi
 
+# The API reports an expired app session as HTTP 200 + success:false, not as
+# a 401, so the app-login wording has to come from the body branch too — the
+# user never pasted this token and cannot know it "expired".
+printf '{"code":401,"msg":"token expired or incorrect","success":false}' >"$TEST_TMP/zai-expired.json"
+checks=$((checks + 1))
+expired_output="$(HOME="$TEST_TMP/zcode-home" \
+    WIDGET_ZCODE_CREDENTIALS="$TEST_TMP/zcode-home/.zcode/v2/credentials.json" \
+    AI_USAGE_CONFIG="$TEST_TMP/zcode-config.json" \
+    AI_USAGE_CACHE_DIR="$TEST_TMP/cache" \
+    ZAI_RESPONSE_FILE="$TEST_TMP/zai-expired.json" \
+    "$BACKEND" --provider zai)"
+if ! printf '%s' "$expired_output" | jq -e '
+    .providers[0].error == "Z.AI: ZCode session expired — log in again in the ZCode app (token expired or incorrect)"' >/dev/null 2>&1; then
+    printf 'FAIL: an expired app session must point at the app\n  got: %s\n' "$expired_output" >&2
+    failures=$((failures + 1))
+fi
+
+# A pasted API token that expires gets the vendor's own message, unchanged.
+checks=$((checks + 1))
+api_expired_output="$(HOME="$TEST_TMP/home" \
+    AI_USAGE_CONFIG="$TEST_TMP/config.json" \
+    AI_USAGE_CACHE_DIR="$TEST_TMP/cache" \
+    ZAI_RESPONSE_FILE="$TEST_TMP/zai-expired.json" \
+    "$BACKEND" --provider zai)"
+if ! printf '%s' "$api_expired_output" | jq -e '.providers[0].error == "Z.AI: token expired or incorrect"' >/dev/null 2>&1; then
+    printf 'FAIL: an expired API token keeps the vendor wording\n  got: %s\n' "$api_expired_output" >&2
+    failures=$((failures + 1))
+fi
+
 # ── Credentials from the environment are stripped ───────────────────────────
 # A token pasted into the widget's settings field with a trailing newline is
 # passed straight through as WIDGET_*. urllib rejects such a header value with

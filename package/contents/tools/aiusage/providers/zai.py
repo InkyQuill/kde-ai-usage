@@ -263,7 +263,12 @@ def get_zai_usage():
         # itself is alive; the Start Plan buckets are then the whole story.
         if start_plan is not None:
             return {"hasKey": True, "keyValid": True, "tokenSource": source, "credits": {"session": None, "weekly": None}, "startPlan": start_plan}
-        return {"hasKey": True, "keyValid": False, "error": body.get("msg") or "Z.AI API error"}
+        # The API reports an expired session as HTTP 200 + success:false, so
+        # the app-login wording cannot live in the 401 branch alone.
+        message = body.get("msg") or "Z.AI API error"
+        if source == "zcode":
+            message = f"ZCode session expired — log in again in the ZCode app ({message})"
+        return {"hasKey": True, "keyValid": False, "tokenSource": source, "error": message}
 
     data = body.get("data") if isinstance(body.get("data"), dict) else None
     limits = data.get("limits") if data and isinstance(data.get("limits"), list) else None
