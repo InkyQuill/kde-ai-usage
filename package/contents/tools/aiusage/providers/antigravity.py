@@ -186,8 +186,31 @@ def _format_user_status(data):
     }
 
 
+def _cli_binary():
+    """The antigravity usage CLI, or None. $PATH first, then the spots a
+    version-manager install lands in when the parent (a Plasma widget) never
+    ran the user's shell rc — same blindness codex_binary() works around."""
+    for name in ("aiu", "antigravity-usage"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for candidate in (
+        os.environ.get("ANTIGRAVITY_CLI"),
+        "~/.local/share/mise/shims/aiu",
+        "~/.local/bin/aiu",
+        "~/.cargo/bin/aiu",
+        "~/.npm-global/bin/aiu",
+    ):
+        if not candidate:
+            continue
+        expanded = os.path.expanduser(candidate)
+        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+            return expanded
+    return None
+
+
 def get_antigravity_usage():
-    cli = shutil.which("aiu") or shutil.which("antigravity-usage")
+    cli = _cli_binary()
     if cli:
         try:
             proc = subprocess.run([cli, "--json"], capture_output=True, text=True, timeout=15)

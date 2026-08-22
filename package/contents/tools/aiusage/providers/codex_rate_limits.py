@@ -4,9 +4,41 @@ Popen with line-buffered stdin/stdout; a 5s read timeout per phase, and the chil
 """
 
 import json
+import os
 import selectors
 import shutil
 import subprocess
+
+# Where the codex CLI lives when it is not on $PATH. Plasma widgets (and any
+# other non-login parent) do not run the user's shell rc, so version managers
+# that put the CLI on PATH only there — mise/asdf shims, cargo-installed
+# binaries — are invisible to the backend even though `codex` works fine in a
+# terminal. The mise shim is preferred over the versioned install dir because
+# it survives toolchain updates.
+_CODEX_FALLBACKS = (
+    "~/.local/share/mise/shims/codex",
+    "~/.local/bin/codex",
+    "~/.cargo/bin/codex",
+    "~/.npm-global/bin/codex",
+    "/usr/local/bin/codex",
+    "/usr/bin/codex",
+)
+
+
+def codex_binary():
+    """Absolute path to the codex CLI, or None. $CODEX_BIN wins, then $PATH,
+    then the usual non-login install spots."""
+    override = os.environ.get("CODEX_BIN")
+    if override:
+        return override
+    found = shutil.which("codex")
+    if found:
+        return found
+    for candidate in _CODEX_FALLBACKS:
+        expanded = os.path.expanduser(candidate)
+        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+            return expanded
+    return None
 
 
 def _read_until_id(stream, want_id, timeout):
@@ -33,12 +65,13 @@ def _read_until_id(stream, want_id, timeout):
 
 
 def get_codex_rate_limits():
-    if shutil.which("codex") is None:
+    binary = codex_binary()
+    if binary is None:
         return {}
 
     try:
         proc = subprocess.Popen(
-            ["codex", "app-server", "--stdio"],
+            [binary, "app-server", "--stdio"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
