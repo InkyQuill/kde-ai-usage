@@ -84,10 +84,10 @@ A KDE Plasma 6 panel widget for tracking AI API quota usage across multiple serv
 | Kiro | Monthly credits, remaining balance, reset date, overage, and inferred plan | Supported |
 | Mistral AI | Key status, available models, and local vibe CLI cost/token statistics | Supported |
 | OpenRouter | Spend, credit limit, usage percentage, and account label | Untested |
-| Z.AI | Coding-plan 5-hour and weekly credit windows with countdowns and burn-rate ETA, free Start Plan per-model daily token buckets, or with a plain API token: 5-hour token quota, monthly tools quota, model details, and today's token consumption | Untested |
+| Z.AI | Coding-plan 5-hour and weekly credit windows with countdowns and burn-rate ETA, free Start Plan per-model daily token buckets, or with a plain API token: 5-hour token quota, monthly tools quota, model details, and today's token consumption | Supported |
 | GitHub Copilot | Monthly premium request usage against a configurable quota | Personal billing supported; organization/enterprise billing not yet supported |
-| DeepSeek | Available balance with granted and topped-up breakdown | Untested |
-| Kimi / Moonshot AI | Available balance with voucher and cash breakdown | Untested |
+| DeepSeek | Available balance with granted and topped-up breakdown | Supported |
+| Kimi / Moonshot AI | Available balance with voucher and cash breakdown | Supported |
 
 Provider APIs do not all expose the same information. In particular, Codex/ChatGPT
 plan limits are separate from OpenAI API organization usage, DeepSeek reports a
@@ -336,16 +336,16 @@ The widget validates the configured API key against the Mistral API and lists av
 ### OpenRouter *(untested)*
 The widget fetches credit usage and limit from the OpenRouter API using the configured key. The popup shows USD spent, the credit limit (if any), and the account label. The usage bar reflects spend as a percentage of the limit; if no limit is set the bar stays empty.
 
-### Z.AI *(untested)*
+### Z.AI
 The Z.AI tab calls `GET https://api.z.ai/api/monitor/usage/quota/limit` with the resolved token. With a coding plan (GLM Coding Lite/Pro/Max) it shows the 5-hour and weekly credit windows with countdowns, burn-rate ETA, and period comparison, and lists free ZCode Start Plan per-model daily token buckets below when the account has one. With a plain API token it shows the 5-hour token quota, monthly tools quota, model details, and today's token consumption instead. The token is resolved from widget settings → `$ZAI_TOKEN` → `$Z_AI_API_KEY` → `~/.config/zai/token` → `~/.zai/token` → the ZCode app's own session: `~/.zcode/v2/credentials.json` is decrypted locally (AES-256-GCM under a machine-local key derived the same way the app derives it, so the file only opens on the machine and for the user that wrote it; `$ZCODE_CREDENTIAL_SECRET` overrides when the app was configured that way). When that session expires, log into the ZCode app again and the widget picks up the fresh token on the next refresh. A "ZCODE" badge marks data that came from the app's session.
 
 ### GitHub Copilot
 The GitHub Copilot tab reads monthly premium request usage from GitHub's user billing API. It validates the token against the GitHub user endpoint, then fetches premium request usage and scales it against the configured quota, which defaults to 300. The token is resolved from widget settings → `$GITHUB_TOKEN` → `~/.config/github-copilot/token`, and a fine-grained token needs **Plan: read** permission. This user endpoint covers Copilot plans billed personally; usage billed through an organization or enterprise is not shown yet. A VS Code Copilot login is not imported automatically because VS Code keeps its session token in encrypted secret storage rather than a reusable plaintext config file.
 
-### DeepSeek *(untested)*
+### DeepSeek
 The DeepSeek tab calls `GET https://api.deepseek.com/user/balance` with the configured API key. It shows whether the account has sufficient balance for API calls, the primary total balance, and the granted / topped-up split. The key is resolved from widget settings → `$DEEPSEEK_API_KEY` → `~/.config/deepseek/api-key`.
 
-### Kimi / Moonshot AI *(untested)*
+### Kimi / Moonshot AI
 The Kimi tab calls `GET https://api.moonshot.ai/v1/users/me/balance` and shows the available, voucher, and cash balances. The key is resolved from widget settings → `$MOONSHOT_API_KEY` / `$KIMI_API_KEY` → `~/.config/moonshot/api-key`.
 
 ### Usage history
