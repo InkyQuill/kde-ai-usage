@@ -224,11 +224,19 @@ check mistral-missing "reports an unconfigured key" '
 check openrouter-success "derives the credit percentage" '
     .ok and .details.usageUSD == 3.25 and .details.limitUSD == 10
     and .historyValues == {or: 32.5}
-    and .quotaWindows[0].detail == "$3.25 / $10"'
+    and .quotaWindows[0].detail == "$3.25 / $10"
+    and .slots[0].text == "$6.75"
+    and (.slots[0].tooltip | contains("Remaining: $6.75"))'
+check openrouter-unused "shows the full remaining balance before any spend" '
+    .ok and .details.usageUSD == 0 and .slots[0].text == "$10"
+    and (.slots[0].tooltip | contains("Remaining: $10"))'
+check openrouter-exhausted "shows a zero remaining balance" '
+    .ok and .details.limitRemainingUSD == 0 and .slots[0].text == "$0"'
 check openrouter-unlimited "treats a null limit as unlimited" '
     .ok and .details.limitUSD == null and .summary.pct == 0
     and .historyValues == {}
-    and (.quotaWindows[0].detail | endswith("unlimited"))'
+    and (.quotaWindows[0].detail | endswith("unlimited"))
+    and .slots[0].text == "—"'
 check openrouter-missing "reports an unconfigured key" '
     (.ok | not) and .error == "OpenRouter: no API key configured"'
 

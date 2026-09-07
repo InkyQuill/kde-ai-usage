@@ -30,6 +30,8 @@ def normalize_openrouter(raw):
     limit = limit if isinstance(limit, (int, float)) and not isinstance(limit, bool) else None
     pct = min(usage / limit * 100, 100) if (limit is not None and limit > 0) else 0
     account = res.get("label") or ""
+    limit_remaining = res.get("limitRemainingUSD")
+    limit_remaining = limit_remaining if isinstance(limit_remaining, (int, float)) and not isinstance(limit_remaining, bool) else None
 
     r = provider_base("openrouter", "OpenRouter", "#9333ea", now)
     r["summary"] = {"pct": pct, "text": money(usage, "USD"), "detail": account, "hasChart": True}
@@ -38,14 +40,13 @@ def normalize_openrouter(raw):
     tooltip = (
         "OpenRouter"
         + (f"\n{account}" if account != "" else "")
+        + (f"\nRemaining: {money(limit_remaining, 'USD')}" if limit_remaining is not None else "\nRemaining: unavailable")
         + f"\nUsed: {money(usage, 'USD')}"
         + (f"\nLimit: {money(limit, 'USD')}" if limit is not None else "")
     )
-    r["slots"] = [{"pct": pct, "color": "#9333ea", "text": money(usage, "USD") if usage > 0 else "✓ key", "tooltip": tooltip}]
+    r["slots"] = [{"pct": pct, "color": "#9333ea", "text": money(limit_remaining, "USD") if limit_remaining is not None else "—", "tooltip": tooltip}]
     r["chartWindows"] = monthly_window("openrouter", "or", False)
     r["historyValues"] = {"or": pct} if pct > 0 else {}
-    limit_remaining = res.get("limitRemainingUSD")
-    limit_remaining = limit_remaining if isinstance(limit_remaining, (int, float)) and not isinstance(limit_remaining, bool) else None
     r["details"] = {
         "hasKey": res.get("hasKey") is True,
         "keyValid": res.get("keyValid") is True,

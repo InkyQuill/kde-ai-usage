@@ -2048,8 +2048,8 @@ PlasmoidItem {
                 stale: root.stale && root.panelShows("openrouter")
                 visible: root.panelShows("openrouter") && !root.showSettings
                 showCost: true
-                costText: root.openrouterKeyValid ? (root.openrouterUsageUSD > 0 ? "$" + root.openrouterUsageUSD.toFixed(3) : "✓ key") : "—"
-                tooltipText: "OpenRouter" + (root.openrouterLabel ? "\n" + root.openrouterLabel : "") + (root.openrouterUsageUSD > 0 ? "\nUsed: $" + root.openrouterUsageUSD.toFixed(4) : "") + (root.openrouterLimitUSD !== null ? "\nLimit: $" + root.openrouterLimitUSD.toFixed(2) : "")
+                costText: root.openrouterKeyValid && root.openrouterLimitRemainingUSD !== null ? "$" + root.openrouterLimitRemainingUSD.toFixed(2) : "—"
+                tooltipText: "OpenRouter" + (root.openrouterLabel ? "\n" + root.openrouterLabel : "") + (root.openrouterLimitRemainingUSD !== null ? "\nRemaining: $" + root.openrouterLimitRemainingUSD.toFixed(4) : "\nRemaining: unavailable") + (root.openrouterUsageUSD > 0 ? "\nUsed: $" + root.openrouterUsageUSD.toFixed(4) : "") + (root.openrouterLimitUSD !== null ? "\nLimit: $" + root.openrouterLimitUSD.toFixed(2) : "")
             }
 
             PanelSlot {
