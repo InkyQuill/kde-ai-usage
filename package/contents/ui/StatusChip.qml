@@ -6,15 +6,19 @@ import org.kde.plasma.components as PlasmaComponents
 Rectangle {
     id: statusChip
 
-    // "none" | "minor" | "major" | "critical" | "" (hidden until fetched)
-    property string indicator: ""
-    property string description: ""
-    property var affectedComponents: []
-    property var incidents: []
-    property string latestUpdate: ""
-    property string statusUrl: ""
-    // When true: shows a neutral link chip even without a live status fetch
-    property bool linkOnly: false
+    // One provider's details.status from the backend:
+    // { indicator, description, components, incidents, latestUpdate, url }
+    property var status: ({})
+
+    // "none" | "minor" | "major" | "critical" | "" (no live feed)
+    readonly property string indicator: (status && status.indicator) || ""
+    readonly property string description: (status && status.description) || ""
+    readonly property var affectedComponents: (status && status.components) || []
+    readonly property var incidents: (status && status.incidents) || []
+    readonly property string latestUpdate: (status && status.latestUpdate) || ""
+    readonly property string statusUrl: (status && status.url) || ""
+    // A page without a machine-readable feed is still worth a link.
+    readonly property bool linkOnly: indicator === "" && statusUrl !== ""
 
     visible: indicator !== "" || linkOnly
     implicitHeight: 16
@@ -40,12 +44,12 @@ Rectangle {
     QQC2.ToolTip.visible: chipMA.containsMouse && !linkOnly
     QQC2.ToolTip.delay: 300
     QQC2.ToolTip.text: {
-        var lines = ["Status  ·  " + (description || "Unknown")];
+        var lines = [i18n("Status") + "  ·  " + (description || i18n("Unknown"))];
 
         var comps = affectedComponents || [];
         if (comps.length > 0) {
             lines.push("");
-            lines.push("Affected:");
+            lines.push(i18n("Affected:"));
             for (var c = 0; c < comps.length; c++)
                 lines.push("  · " + comps[c]);
         }
@@ -53,7 +57,7 @@ Rectangle {
         var inc = incidents || [];
         if (inc.length > 0) {
             lines.push("");
-            lines.push(inc.length === 1 ? "Incident:" : "Incidents:");
+            lines.push(i18np("Incident:", "Incidents:", inc.length));
             for (var i = 0; i < inc.length; i++)
                 lines.push("  · " + inc[i]);
         }
@@ -61,13 +65,13 @@ Rectangle {
         var upd = latestUpdate || "";
         if (upd !== "") {
             lines.push("");
-            lines.push("Latest update:");
+            lines.push(i18n("Latest update:"));
             lines.push(upd);
         }
 
         if (statusUrl !== "") {
             lines.push("");
-            lines.push("Click to open status page");
+            lines.push(i18n("Click to open status page"));
         }
         return lines.join("\n");
     }
@@ -116,15 +120,15 @@ Rectangle {
             id: chipLabel
             text: {
                 if (statusChip.linkOnly)
-                    return "Status ↗";
+                    return i18n("Status ↗");
                 var ind = statusChip.indicator;
                 if (ind === "critical")
-                    return "Major Outage";
+                    return i18n("Major Outage");
                 if (ind === "major")
-                    return "Partial Outage";
+                    return i18n("Partial Outage");
                 if (ind === "minor")
-                    return "Minor Issues";
-                return "Operational";
+                    return i18n("Minor Issues");
+                return i18n("Operational");
             }
             font.pixelSize: 9
             font.bold: !statusChip.linkOnly && statusChip.indicator !== "none"

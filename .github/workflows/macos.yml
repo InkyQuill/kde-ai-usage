@@ -1,0 +1,256 @@
+name: macOS
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      # The macOS frontend cannot be run on the machine it is developed from,
+      # so its branches build here rather than only on a pull request.
+      - 'claude/**'
+      - 'macos/**'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # The providers' macOS paths and Keychain reads, on a real Mac. The suites
+  # themselves are the portable ones lint.yml already runs on Linux and
+  # Windows; what this adds is a platform where paths.IS_MACOS is true.
+  backend:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Run the backend suites
+        run: python3 -m unittest discover -s tests/python -v
+
+      - name: The backend answers on this platform
+        run: |
+          ./package/contents/tools/sh/get-ai-usage --list
+          # --all with no credentials anywhere: every provider should come back
+          # as a readable error row, not a traceback.
+          ./package/contents/tools/sh/get-ai-usage --all > /tmp/envelope.json
+          python3 -c "
+          import json, sys
+          envelope = json.load(open('/tmp/envelope.json'))
+          assert envelope['schemaVersion'] == 1, envelope
+          print(f\"{len(envelope['providers'])} providers answered\")
+          for provider in envelope['providers']:
+              print(f\"  {provider['id']:12} ok={provider['ok']!s:5} {provider['error'] or provider['summary']['text']}\")
+          "
+
+  app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install backend build dependencies
+        run: python3 -m pip install -r macos/packaging/build-requirements.txt
+
+      - name: Versions
+        run: swift --version && xcodebuild -version
+
+      - name: Build
+        run: |
+          # One architecture for CI: a universal build doubles the compile for
+          # nothing a test can see. The build script defaults to both for distribution.
+          swift build -c release --package-path macos --arch arm64 2>&1 | tee /tmp/build.log
+          ! grep -q "warning:" /tmp/build.log || echo "::warning::the build produced warnings"
+
+      - name: Test
+        run: swift test --package-path macos
+
+      - name: Assemble the app bundle
+        env:
+          AI_USAGE_TARGET_ARCH: arm64
+        run: macos/scripts/build-app.sh --arch arm64
+
+      - name: Smoke-test the bundled backend
+        env:
+          AI_USAGE_CONFIG: ${{ runner.temp }}/backend-smoke/settings.json
+          XDG_DATA_HOME: ${{ runner.temp }}/backend-smoke/data
+        run: |
+          backend="$PWD/macos/.build/AI Usage.app/Contents/Resources/backend/ai-usage-backend"
+          "$backend" --list > "$RUNNER_TEMP/providers.txt"
+          "$backend" --normalize < tests/fixtures/claude-success.json > "$RUNNER_TEMP/normalized.json"
+          "$backend" history autoload > "$RUNNER_TEMP/history.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          assert "claude" in (root / "providers.txt").read_text().split()
+          provider = json.loads((root / "normalized.json").read_text())
+          assert provider["id"] == "claude", provider
+          assert provider["ok"] is True, provider
+          history = json.loads((root / "history.json").read_text())
+          assert history["ok"] is True, history
+          PY
+
+      - name: Self-test and screenshots
+        run: |
+          # Pointed at a fixture instead of the real backend: a CI runner has
+          # no AI subscriptions, and the screenshots have to be reproducible.
+          export AI_USAGE_BACKEND="$PWD/scripts/demo-envelope.py"
+          # A throwaway settings file, so the run cannot read or write anything
+          # of the runner's.
+          export AI_USAGE_CONFIG="$RUNNER_TEMP/settings.json"
+          "macos/.build/AI Usage.app/Contents/MacOS/AIUsage" --selftest
+          "macos/.build/AI Usage.app/Contents/MacOS/AIUsage" --screenshot "$RUNNER_TEMP/screens"
+          ls -la "$RUNNER_TEMP/screens"
+
+      - uses: actions/upload-artifact@v7
+        id: screenshots-upload
+        continue-on-error: true
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/screens/*.png
+          if-no-files-found: error
+
+      # Artifact finalization can intermittently return an intermediary 403.
+      - name: Wait before retrying screenshot upload
+        if: steps.screenshots-upload.outcome == 'failure'
+        run: sleep 10
+
+      - name: Retry screenshot upload
+        if: steps.screenshots-upload.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/screens/*.png
+          if-no-files-found: error
+          overwrite: true
+
+      # ditto, not zip: it preserves the app bundle's extended attributes
+      # (the codesign signature) the way Finder's own "Compress" does.
+      - name: Create DMG
+        run: bash macos/scripts/package-dmg.sh
+
+      - name: zip
+        run: |
+          VERSION="$(grep -oE '"Version":[[:space:]]*"[^"]+"' package/metadata.json | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
+          ditto -c -k --keepParent "macos/.build/AI Usage.app" "ai-usage-macos-$VERSION.zip"
+
+      - uses: actions/upload-artifact@v7
+        id: app-upload
+        continue-on-error: true
+        with:
+          name: ai-usage-macos
+          path: |
+            ai-usage-macos-*.zip
+            ai-usage-macos-*.dmg
+          if-no-files-found: error
+          # A release has its own copy attached; this one is for trying a build.
+          retention-days: 14
+
+      # Artifact finalization can intermittently return an intermediary 403.
+      - name: Wait before retrying app upload
+        if: steps.app-upload.outcome == 'failure'
+        run: sleep 10
+
+      - name: Retry app upload
+        if: steps.app-upload.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-usage-macos
+          path: |
+            ai-usage-macos-*.zip
+            ai-usage-macos-*.dmg
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  screenshots-comment:
+    needs: [backend, app]
+    # Fork pull requests have read-only tokens; their PNGs remain in artifacts.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: macos-screenshots-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      # No checkout or execution of app code in this publishing job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/screens
+
+      - name: Publish PNGs and update the PR conversation
+        uses: actions/github-script@v8
+        env:
+          SCREENSHOT_DIR: ${{ runner.temp }}/screens
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const repo = context.repo;
+            const pr = context.payload.pull_request;
+            const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: pr.number });
+            if (current.state !== 'open' || current.head.sha !== pr.head.sha) {
+              core.info('Skipping screenshots from a superseded or closed PR.');
+              return;
+            }
+            const dir = process.env.SCREENSHOT_DIR;
+            const names = fs.readdirSync(dir).filter(name => /^[a-z0-9-]+\.png$/.test(name)).sort();
+            if (!names.length) throw new Error('Screenshot artifact contains no PNGs');
+            const tree = [];
+            for (const name of names) {
+              const file = path.join(dir, name);
+              const stat = fs.lstatSync(file);
+              if (!stat.isFile() || stat.size > 10 * 1024 * 1024) throw new Error(`Invalid screenshot: ${name}`);
+              const png = fs.readFileSync(file);
+              if (!png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+                throw new Error(`Not a PNG: ${name}`);
+              const { data: blob } = await github.rest.git.createBlob({ ...repo, content: png.toString('base64'), encoding: 'base64' });
+              tree.push({ path: name, mode: '100644', type: 'blob', sha: blob.sha });
+            }
+            const ref = `heads/ci-screenshots/pr-${pr.number}`;
+            let previous;
+            try {
+              const result = await github.rest.git.getRef({ ...repo, ref });
+              previous = result.data.object.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const { data: snapshot } = await github.rest.git.createTree({ ...repo, tree });
+            const { data: commit } = await github.rest.git.createCommit({
+              ...repo, message: `macOS screenshots for PR #${pr.number} (${pr.head.sha.slice(0, 7)})`,
+              tree: snapshot.sha, parents: previous ? [previous] : []
+            });
+            if (previous) {
+              await github.rest.git.updateRef({ ...repo, ref, sha: commit.sha, force: false });
+            } else {
+              await github.rest.git.createRef({ ...repo, ref: `refs/${ref}`, sha: commit.sha });
+            }
+            const marker = '<!-- macos-screenshots -->';
+            const runUrl = `${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId}`;
+            const imageRoot = `${context.serverUrl}/${repo.owner}/${repo.repo}/blob/${commit.sha}`;
+            let body = `${marker}\n### macOS screenshots (${pr.head.sha.slice(0, 7)})\n\nBackend and app checks passed. [Build and downloadable PNGs](${runUrl})\n\n`;
+            body += `<details>\n<summary>View screenshots (${names.length})</summary>\n\n`;
+            for (const name of names) {
+              body += `**${name}**\n\n![${name}](${imageRoot}/${name}?raw=true)\n\n`;
+            }
+            body += `</details>\n`;
+            const comments = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: pr.number, per_page: 100 });
+            const existing = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...repo, issue_number: pr.number, body });
+            }

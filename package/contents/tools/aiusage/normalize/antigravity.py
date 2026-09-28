@@ -14,7 +14,7 @@ def normalize_antigravity(raw):
     now = raw["now"]
     res = raw["inputs"].get("usage") or {}
 
-    if not isinstance(res, dict) or len(res) == 0:
+    if not isinstance(res, dict) or not res:
         return provider_error("antigravity", "Antigravity", "#4285f4", now, "Antigravity not configured", {})
 
     if res.get("error") is not None:
@@ -77,7 +77,9 @@ def normalize_antigravity(raw):
         detail = ""
         if grp["key"] == "gemini" and num(credits.get("monthly")) > 0:
             detail = f"{num(credits.get('available'))} / {num(credits.get('monthly'))} credits"
-        quota_windows.append(flat_window("group", grp["label"], grp["usedPct"], grp["resetAt"], detail, True))
+        qw = flat_window(grp["key"], grp["label"], grp["usedPct"], grp["resetAt"], detail, True)
+        qw["color"] = "#4285f4" if grp["key"] == "gemini" else "#34a853"
+        quota_windows.append(qw)
     r["quotaWindows"] = quota_windows
     r["slots"] = [
         {
@@ -94,7 +96,12 @@ def normalize_antigravity(raw):
         },
     ]
     r["chartWindows"] = monthly_window("antigravity", "ag", False)
-    r["historyValues"] = {"ag": pct}
+    history_values = {"ag": pct}
+    if g:
+        history_values["agg"] = gpct
+    if e:
+        history_values["age"] = epct
+    r["historyValues"] = history_values
     r["details"] = {
         "email": res.get("email") or "",
         "planType": plan,

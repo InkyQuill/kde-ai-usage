@@ -1,4 +1,4 @@
-from ..billing import OPENAI_PRICING, empty_org_usage, price_models
+from ..billing import empty_org_usage, price_models
 from ..contract import (
     jround,
     money,
@@ -6,7 +6,6 @@ from ..contract import (
     provider_error,
     quota_window,
     rolling_windows,
-    status_summary,
     unavailable_window,
     window_value,
 )
@@ -14,7 +13,7 @@ from ..stats import codex_stats
 
 
 def _codex_window(w):
-    if w is None or not isinstance(w, dict):
+    if not isinstance(w, dict):
         return {"kind": "", "value": unavailable_window()}
     mins = w.get("windowDurationMins")
     mins = mins if isinstance(mins, (int, float)) and not isinstance(mins, bool) else None
@@ -29,6 +28,11 @@ def _codex_window(w):
     pct = w["usedPercent"] if w.get("usedPercent") is not None else w.get("used_percent")
     reset = w["resetsAt"] if w.get("resetsAt") is not None else w.get("reset_at")
     value = unavailable_window() if kind == "" else window_value(pct, reset, True)
+    # A duration alone is not evidence of an active session allowance. Treat
+    # zero usage without a reset as a placeholder; keep zero with a reset
+    # (including Spark), and keep nonzero usage even if its reset is missing.
+    if kind == "session" and value["pct"] == 0 and value["resetAt"] <= 0:
+        value = unavailable_window()
     return {"kind": kind, "value": value}
 
 
@@ -36,15 +40,14 @@ def _assign_codex_window(base, w):
     c = _codex_window(w)
     if c["kind"] != "":
         base[c["kind"]] = c["value"]
-    return base
 
 
 def codex_normalize(p):
     main = p.get("rateLimits") or p.get("rate_limit")
     base = {"session": unavailable_window(), "weekly": unavailable_window()}
     if main is not None:
-        base = _assign_codex_window(base, main.get("primary") or main.get("primary_window"))
-        base = _assign_codex_window(base, main.get("secondary") or main.get("secondary_window"))
+        _assign_codex_window(base, main.get("primary") or main.get("primary_window"))
+        _assign_codex_window(base, main.get("secondary") or main.get("secondary_window"))
 
     by_id = p.get("rateLimitsByLimitId")
     additional = []
@@ -58,8 +61,8 @@ def codex_normalize(p):
                 "weekly": unavailable_window(),
                 "limitReached": s.get("rateLimitReachedType") is not None,
             }
-            entry = _assign_codex_window(entry, s.get("primary"))
-            entry = _assign_codex_window(entry, s.get("secondary"))
+            _assign_codex_window(entry, s.get("primary"))
+            _assign_codex_window(entry, s.get("secondary"))
             additional.append(entry)
     else:
         for i, lim in enumerate(p.get("additional_rate_limits") or []):
@@ -70,8 +73,8 @@ def codex_normalize(p):
                 "weekly": unavailable_window(),
                 "limitReached": r.get("limit_reached") is True,
             }
-            entry = _assign_codex_window(entry, r.get("primary_window"))
-            entry = _assign_codex_window(entry, r.get("secondary_window"))
+            _assign_codex_window(entry, r.get("primary_window"))
+            _assign_codex_window(entry, r.get("secondary_window"))
             additional.append(entry)
 
     m = main or {}
@@ -91,11 +94,10 @@ def normalize_openai(raw):
     logged_in = (creds.get("codexLoggedIn") is True) or ((creds.get("codexAccessToken") or "") != "")
     codex = codex_normalize(inp.get("codex") or {})
     codex_available = codex["session"]["available"] or codex["weekly"]["available"]
-    status = status_summary(inp.get("status"))
     stats = codex_stats(inp.get("stats"), now)
     if inp.get("orgUsage") is not None:
         entries = [item for r in (inp["orgUsage"].get("data") or []) for item in (r.get("results") or [])]
-        org = price_models(entries, OPENAI_PRICING)
+        org = price_models(entries, inp.get("pricing") or {})
     else:
         org = empty_org_usage()
     plan = codex.get("planType") or creds.get("planType") or ""
@@ -117,24 +119,29 @@ def normalize_openai(raw):
         },
         "organizationUsage": org,
         "stats": stats,
-        "status": status,
     }
 
     if not has_key and not logged_in:
         return provider_error("openai", "OpenAI", "#10a37f", now, "OpenAI: no API key or Codex login", details)
 
     if codex_available:
+        # Only the windows the plan actually reports. Plans without a 5-hour
+        # window exist (OpenAI dropped it from some), and listing it anyway put
+        # an empty "0%" row in the popups and a fake 0% on the pill.
+        session_on, weekly_on = codex["session"]["available"], codex["weekly"]["available"]
+        headline = codex["session"] if session_on else codex["weekly"]
         r = provider_base("openai", "OpenAI", "#10a37f", now)
         r["summary"] = {
-            "pct": codex["session"]["pct"],
-            "text": f"{jround(codex['session']['pct'])}%",
+            "pct": headline["pct"],
+            "text": f"{jround(headline['pct'])}%",
             "detail": plan + (f" · {creds.get('email')}" if (creds.get("email") or "") != "" else ""),
             "hasChart": True,
         }
-        quota_windows = [
-            quota_window("codex_session", "Codex 5-hour", codex["session"], "ChatGPT/Codex plan window"),
-            quota_window("codex_weekly", "Codex weekly", codex["weekly"], "Secondary plan window"),
-        ]
+        quota_windows = []
+        if session_on:
+            quota_windows.append(quota_window("codex_session", "Codex 5-hour", codex["session"], "ChatGPT/Codex plan window"))
+        if weekly_on:
+            quota_windows.append(quota_window("codex_weekly", "Codex weekly", codex["weekly"], "Secondary plan window"))
         for a in codex["additional"]:
             if a["session"]["available"]:
                 quota_windows.append(
@@ -148,21 +155,35 @@ def normalize_openai(raw):
             if a["weekly"]["available"]:
                 quota_windows.append(quota_window("additional", f"{a['name']} · weekly", a["weekly"], ""))
         r["quotaWindows"] = quota_windows
-        r["slots"] = [
-            {
-                "pct": codex["session"]["pct"],
-                "color": "#10a37f",
-                "text": None,
-                "tooltip": f"Codex 5h: {jround(100 - codex['session']['pct'])}% left",
-            },
-            {
-                "pct": codex["weekly"]["pct"],
-                "color": "#10a37f",
-                "text": None,
-                "tooltip": f"Codex weekly: {jround(100 - codex['weekly']['pct'])}% left",
-            },
-        ]
-        r["chartWindows"] = rolling_windows("codex_primary", "codex_day", "codex_weekly", "cp", "cw", codex["session"], codex["weekly"])
+        r["slots"] = []
+        if session_on:
+            r["slots"].append(
+                {
+                    "pct": codex["session"]["pct"],
+                    "color": "#10a37f",
+                    "text": None,
+                    "tooltip": f"Codex 5h: {jround(100 - codex['session']['pct'])}% left",
+                }
+            )
+        if weekly_on:
+            r["slots"].append(
+                {
+                    "pct": codex["weekly"]["pct"],
+                    "color": "#10a37f",
+                    "text": None,
+                    "tooltip": f"Codex weekly: {jround(100 - codex['weekly']['pct'])}% left",
+                }
+            )
+        r["chartWindows"] = rolling_windows(
+            "codex_primary",
+            "codex_day",
+            "codex_weekly",
+            "cp",
+            "cw",
+            codex["session"],
+            codex["weekly"],
+            monthly_id="codex_monthly",
+        )
         r["historyValues"] = {
             **({"cp": codex["session"]["pct"]} if codex["session"]["available"] else {}),
             **({"cw": codex["weekly"]["pct"]} if codex["weekly"]["available"] else {}),

@@ -10,7 +10,9 @@ import json
 import os
 import re
 
+from .. import paths
 from ..contract import _parse_utc
+from .openai_credentials import codex_home
 
 _DATE_RE = re.compile(r".*/(\d{4})/(\d{2})/(\d{2})/[^/]*$")
 _TOML_KEY_RE_CACHE = {}
@@ -49,7 +51,7 @@ def _grep_toml(path, key):
         pattern = re.compile(r"^\s*" + re.escape(key) + r'\s*=\s*"([^"]*)"')
         _TOML_KEY_RE_CACHE[key] = pattern
     try:
-        with open(path, errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 m = pattern.match(line)
                 if m:
@@ -83,7 +85,7 @@ def _scan_rollout(path, date):
     msgs = 0
     first = True
     try:
-        with open(path, errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 pre = line[:200]
                 if first:
@@ -214,9 +216,9 @@ def _aggregate(records, cfg_model, cfg_effort):
 
 
 def get_codex_stats():
-    sessions = os.environ.get("CODEX_SESSIONS_DIR") or os.path.expanduser("~/.codex/sessions")
-    config_file = os.environ.get("CODEX_CONFIG_FILE") or os.path.expanduser("~/.codex/config.toml")
-    cache_dir = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "kde-ai-usage")
+    sessions = os.environ.get("CODEX_SESSIONS_DIR") or os.path.join(codex_home(), "sessions")
+    config_file = os.environ.get("CODEX_CONFIG_FILE") or os.path.join(codex_home(), "config.toml")
+    cache_dir = os.path.join(paths.cache_home(), "kde-ai-usage")
     cache_path = os.path.join(cache_dir, "codex-stats.json")
 
     if not os.path.isdir(sessions):
@@ -232,7 +234,7 @@ def get_codex_stats():
             stale = True
         if not stale:
             try:
-                with open(cache_path) as fh:
+                with open(cache_path, encoding="utf-8") as fh:
                     return json.load(fh)
             except (OSError, ValueError):
                 pass
@@ -242,7 +244,9 @@ def get_codex_stats():
 
     records = []
     for f in files:
-        m = _DATE_RE.match(f)
+        # The rollout's date lives in its directory names; match on a
+        # forward-slash spelling so a Windows path matches too.
+        m = _DATE_RE.match(f.replace(os.sep, "/"))
         if not m:
             continue
         date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
@@ -254,7 +258,7 @@ def get_codex_stats():
 
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        with open(cache_path, "w") as fh:
+        with open(cache_path, "w", encoding="utf-8") as fh:
             json.dump(result, fh)
     except OSError:
         pass

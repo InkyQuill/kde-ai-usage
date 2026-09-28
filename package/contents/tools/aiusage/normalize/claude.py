@@ -1,4 +1,4 @@
-from ..billing import CLAUDE_PRICING, empty_org_usage, price_models
+from ..billing import empty_org_usage, price_models
 from ..contract import (
     jround,
     num,
@@ -6,7 +6,6 @@ from ..contract import (
     provider_error,
     quota_window,
     rolling_windows,
-    status_summary,
     unavailable_window,
     window_value,
 )
@@ -74,10 +73,9 @@ def normalize_claude(raw):
     token = oauth.get("accessToken") or ""
     has_admin = (creds.get("claudeAdminApiKey") or "") != ""
     usage = inp.get("usage")
-    status = status_summary(inp.get("status"))
     stats = claude_stats(inp.get("stats"), now)
     if inp.get("orgUsage") is not None:
-        org = price_models((inp["orgUsage"].get("data") or []), CLAUDE_PRICING)
+        org = price_models((inp["orgUsage"].get("data") or []), inp.get("pricing") or {})
     else:
         org = empty_org_usage()
 
@@ -91,7 +89,6 @@ def normalize_claude(raw):
         "autoDream": (inp.get("settings") or {}).get("autoDreamEnabled") is True,
         "organizationUsage": org,
         "stats": stats,
-        "status": status,
         "scopedWeekly": [],
     }
 
@@ -165,7 +162,7 @@ def normalize_claude(raw):
             "tooltip": f"Claude 7-day: {jround(w['weekly']['pct'])}%" + (f"\n{w_detail}" if w_detail else ""),
         },
     ]
-    r["chartWindows"] = rolling_windows("session", "day", "weekly", "s", "w", w["session"], w["weekly"])
+    r["chartWindows"] = rolling_windows("session", "day", "weekly", "s", "w", w["session"], w["weekly"], monthly_id="monthly")
     r["historyValues"] = {
         **({"s": w["session"]["pct"]} if w["session"]["available"] else {}),
         **({"w": w["weekly"]["pct"]} if w["weekly"]["available"] else {}),

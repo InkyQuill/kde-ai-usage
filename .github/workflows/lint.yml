@@ -11,47 +11,105 @@ permissions:
   contents: read
 
 jobs:
+  # Figures out which of the two jobs below actually need to run for this
+  # diff, so e.g. a docs-only or hyprland-only PR doesn't pay for a backend
+  # test run, and a QML-only PR doesn't pay for ruff/pytest.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      qml: ${{ steps.filter.outputs.qml }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            qml:
+              - 'package/contents/**/*.qml'
+              - 'package/contents/**/*.js'
+              - 'package/metadata.json'
+              - 'translate/**'
+              # Their shell.i18n(…) strings are extracted into translate/*.po too.
+              - 'hyprland/**'
+              - 'windows/qml/**'
+              - 'macos/Sources/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - '.github/workflows/lint.yml'
+            backend:
+              - 'package/contents/tools/aiusage/**'
+              - 'windows/**'
+              - 'macos/**'
+              - 'scripts/**/*.py'
+              - 'tests/python/**'
+              - 'tests/behavior/**'
+              - 'tests/fixtures/**'
+              - 'tests/*.test.sh'
+              - 'tests/*.test.js'
+              - 'hyprland/**'
+              - 'package/contents/ui/**'
+              # What the node tests exercise: the shared JS and the French catalog.
+              - 'package/contents/code/**'
+              - 'translate/**'
+              - 'pyproject.toml'
+              - '.github/workflows/lint.yml'
+
   qml:
+    needs: changes
+    if: needs.changes.outputs.qml == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: cachix/install-nix-action@v27
 
       - name: qmllint
-        run: nix develop --command bash -c 'find package/contents -name "*.qml" | xargs qmllint --unresolved-type info'
+        run: nix develop --command bash -c 'find package/contents -name "*.qml" -print0 | xargs -0 qmllint -E --unresolved-type info'
 
       - name: qmlformat check
         run: nix develop --command bash -c 'find package/contents -name "*.qml" | xargs qmlformat --dry-run 2>&1 | grep -q "would reformat" && echo "Files need formatting, run qmlformat -i" && exit 1 || true'
 
+      - name: i18n catalogs complete
+        run: nix develop --command ./translate/check.sh
+
+      - name: i18n catalogs in sync with sources
+        run: |
+          nix develop --command ./translate/Messages.sh
+          git diff --exit-code -- 'translate/*.po'
+
+      # The .mo files are not committed; this only proves every catalog compiles.
+      - name: i18n catalogs compile
+        run: nix develop --command ./translate/build.sh
+
   backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: ruff check
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@v4.1.0
         with:
-          args: "check package/contents/tools/aiusage"
+          args: "check package/contents/tools/aiusage windows macos scripts tests/python"
 
       - name: ruff format check
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@v4.1.0
         with:
-          args: "format --check package/contents/tools/aiusage"
+          args: "format --check package/contents/tools/aiusage windows macos scripts tests/python"
 
-      - name: provider contract tests
-        run: ./tests/get-ai-usage.test.sh
+      - name: portable backend tests
+        run: python3 -m unittest discover -s tests/python
 
-      - name: terminal frontend tests
-        run: ./tests/ai-usage-cli.test.sh
+      - name: interpreter resolution tests
+        run: ./tests/python-interp.test.sh
 
-      - name: credential discovery tests
-        run: ./tests/credentials.test.sh
-
-      - name: codex helper tests
-        run: |
-          ./tests/get-codex-stats.test.sh
-          ./tests/get-codex-rate-limits.test.sh
+      - name: shared history file tests
+        run: ./tests/history-io.test.sh
 
       - name: shared frontend code tests
         run: node --test tests/*.test.js

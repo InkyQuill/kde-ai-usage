@@ -1,19 +1,18 @@
-from ..contract import flat_window, money, monthly_window, num, provider_base, provider_error, status_summary
+from ..contract import flat_window, money, monthly_window, num, provider_base, provider_error
 
 
 def normalize_mistral(raw):
     now = raw["now"]
     res = raw["inputs"].get("usage") or {}
-    status = status_summary(raw["inputs"].get("status"))
 
-    if not isinstance(res, dict) or len(res) == 0:
+    if not isinstance(res, dict) or not res:
         return provider_error(
             "mistral",
             "Mistral",
             "#ff7000",
             now,
             "Mistral: no API key configured",
-            {"hasKey": False, "keyValid": False, "status": status},
+            {"hasKey": False, "keyValid": False},
         )
 
     cost = num(res.get("vibeTotalCost"))
@@ -36,7 +35,6 @@ def normalize_mistral(raw):
             "activeModel": res.get("vibeActiveModel") or "",
             "recent": res.get("vibeRecent") or [],
         },
-        "status": status,
     }
 
     if res.get("error") is not None:

@@ -6,7 +6,9 @@ import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.plasma5support as Plasma5Support
 import org.kde.plasma.plasmoid
+import "../code/FeatureTabs.js" as FeatureTabs
 import "../code/Format.js" as Format
+import "../code/PanelRotation.js" as PanelRotation
 import "../code/Shell.js" as Shell
 import "../code/UsageHistory.js" as UsageHistory
 
@@ -22,9 +24,9 @@ PlasmoidItem {
     // ── Script directory ──────────────────────────────────────────────────────
     readonly property string scriptDir: Qt.resolvedUrl("../tools/sh/").toString().replace("file://", "")
     // ── Settings: which tabs are enabled (persisted via Plasmoid.configuration) ─
-    // Computed list of enabled tab IDs, in the registry's display order.
+    // Feature views (Overview / Spend / Sessions) sit ahead of provider tabs.
     property var enabledTabs: {
-        var t = [];
+        var t = FeatureTabs.enabledFeatureTabsPlasmoid(Plasmoid.configuration);
         for (var i = 0; i < root.providers.length; i++) {
             var p = root.providers[i];
             if (Plasmoid.configuration[p.id + "Enabled"])
@@ -33,45 +35,36 @@ PlasmoidItem {
         return t;
     }
     property int activeTab: 0
+    // The last real provider tab selected (never a feature tab id) — what
+    // the compact panel falls back to while a feature tab is active, in
+    // preference to just the first enabled provider.
+    property string lastProviderId: ""
     // Primary tab for single-tab fallbacks. The compact panel can show every
-    // pinned service; without pins it mirrors the in-popup active tab.
+    // pinned service; without pins it mirrors the in-popup active tab — but
+    // never a feature view, which has no panel meter of its own.
     readonly property string panelTab: {
+        if (root.panelRotationEnabled)
+            return root.panelRotationProviderId !== "" ? root.panelRotationProviderId : root.pinnedTabs[0];
         if (root.pinnedTabs.length > 0)
             return root.pinnedTabs[0];
 
-        return root.enabledTabs[root.activeTab] || "";
+        var tab = root.enabledTabs[root.activeTab] || "";
+        if (!FeatureTabs.isFeatureTab(tab))
+            return tab;
+        if (root.lastProviderId !== "" && root.enabledTabs.indexOf(root.lastProviderId) !== -1)
+            return root.lastProviderId;
+        for (var i = 0; i < root.enabledTabs.length; i++) {
+            if (!FeatureTabs.isFeatureTab(root.enabledTabs[i]))
+                return root.enabledTabs[i];
+        }
+        return "";
     }
     property real chartTimeOffset: 0
     // ── Service status (status pages) ────────────────────────────────────────
-    // Each object: { indicator, description, components, incidents, latestUpdate }
-    property var claudeStatus: ({
-            "indicator": "",
-            "description": "",
-            "components": [],
-            "incidents": [],
-            "latestUpdate": ""
-        })
-    property var mistralStatus: ({
-            "indicator": "",
-            "description": "",
-            "components": [],
-            "incidents": [],
-            "latestUpdate": ""
-        })
-    property var openaiStatus: ({
-            "indicator": "",
-            "description": "",
-            "components": [],
-            "incidents": [],
-            "latestUpdate": ""
-        })
-    property var openrouterStatus: ({
-            "indicator": "",
-            "description": "",
-            "components": [],
-            "incidents": [],
-            "latestUpdate": ""
-        })
+    // Provider id → details.status from the backend:
+    // { indicator, description, components, incidents, latestUpdate, url }
+    property var providerStatus: ({})
+    property var localSpend: ({})
     // ── Claude data ───────────────────────────────────────────────────────────
     property bool sessionAvailable: false
     property real sessionPct: 0
@@ -147,6 +140,7 @@ PlasmoidItem {
     property string codexStatsFavoriteModel: ""
     property var codexStatsModels: ({})
     property var codexStatsDailyTokens: []
+    property real codexStatsTotalCostUSD: 0
     // Live model / reasoning effort, from the newest rollout's turn_context
     // (falls back to ~/.codex/config.toml).
     property string codexModel: ""
@@ -179,8 +173,8 @@ PlasmoidItem {
     // ── Kiro data ─────────────────────────────────────────────────────────────
     property bool kiroUsageAvailable: false
     property string kiroPlanType: ""
-    property string kiroDisplayName: "Credit"
-    property string kiroDisplayNamePlural: "Credits"
+    property string kiroDisplayName: i18n("Credit")
+    property string kiroDisplayNamePlural: i18n("Credits")
     property real kiroCurrentUsage: 0
     property real kiroUsageLimit: 0
     property real kiroPct: 0
@@ -194,6 +188,7 @@ PlasmoidItem {
     property string kiroResetTime: ""
     property var kiroResetDate: null
     property string kiroCountdown: ""
+    property string kiroSource: ""
     // ── Codex / ChatGPT-plan usage ────────────────────────────────────────────
     // Windows are classified by their actual duration, never by response order.
     property bool codexUsageAvailable: false
@@ -241,6 +236,19 @@ PlasmoidItem {
     property bool openrouterIsFreeTier: false
     property var openrouterRateLimit: ({})
     property string openrouterError: ""
+    property var ollamaWindows: []
+    property var selfhostedProvider: ({})
+    property var ollamaModels: ({})
+    property string ollamaActivityCost: ""
+    property string ollamaError: ""
+    property real ollamaPct: 0
+    readonly property var ollamaWeeklyWindow: {
+        for (var i = 0; i < root.ollamaWindows.length; i++) {
+            if (root.ollamaWindows[i].key === "ollama_weekly")
+                return root.ollamaWindows[i];
+        }
+        return null;
+    }
     // ── Grok CLI / xAI data ──────────────────────────────────────────────────
     property bool grokHasKey: false
     property bool grokLoggedIn: false
@@ -307,6 +315,26 @@ PlasmoidItem {
     property var copilotResetDate: null
     property string copilotCountdown: ""
     property string copilotError: ""
+    property bool copilotUnlimited: false
+    property string copilotPlan: ""
+    // Copilot CLI local activity, from ~/.copilot/session-store.db. The CLI
+    // records no tokens or models, so this is the activity half only.
+    property bool copilotStatsAvailable: false
+    property real copilotStatsTotalSessions: 0
+    property real copilotStatsTotalMessages: 0
+    property real copilotStatsTotalToolCalls: 0
+    property real copilotStatsTotalFiles: 0
+    property real copilotStatsTotalRepositories: 0
+    property var copilotStatsTopRepositories: []
+    property string copilotStatsFirstDate: ""
+    property real copilotStatsActiveDays: 0
+    property real copilotStatsSpanDays: 0
+    property real copilotStatsCurrentStreak: 0
+    property real copilotStatsLongestStreak: 0
+    property real copilotStatsLongestSessionMs: 0
+    property real copilotStatsLongestSessionMessages: 0
+    property real copilotStatsPeakHour: -1
+    property var copilotStatsDailyMessages: []
     // ── DeepSeek data ────────────────────────────────────────────────────────
     property bool deepseekHasKey: false
     property bool deepseekKeyValid: false
@@ -324,34 +352,115 @@ PlasmoidItem {
     property real kimiVoucherBalance: 0
     property real kimiCashBalance: 0
     property string kimiError: ""
+    // Kimi Code plan quota (the `kimi` CLI login) — independent of the key above
+    property bool kimiPlanAvailable: false
+    property bool kimiPlanExhausted: false
+    property string kimiPlanMessage: ""
+    property string kimiPlanError: ""
+    property var kimiPlanWindows: []
+    property real kimiPlanPct: 0
+    property var kimiBooster: null
+
+    // ── Cursor data ──────────────────────────────────────────────────────────
+    property bool cursorLoggedIn: false
+    property bool cursorAvailable: false
+    property string cursorSource: ""
+    property string cursorPlanName: ""
+    property real cursorTotalPct: 0
+    property real cursorAutoPct: 0
+    property real cursorApiPct: 0
+    property bool cursorHasSplit: false
+    property real cursorIncludedSpend: 0
+    property real cursorLimit: 0
+    property real cursorOnDemandUsed: 0
+    property real cursorOnDemandLimit: 0
+    property var cursorResetDate: null
+    property string cursorResetTime: ""
+    property string cursorCountdown: ""
+    property string cursorError: ""
+    // Dashboard usage for the billing cycle, in the shared stats shape (stats.py)
+    property var cursorStats: ({})
+
+    // ── Cline data (local session logs, shared stats shape) ──────────────────
+    property var clineStats: ({})
+    // Today / last 7 days / last 30 days: [{key, label, sessions, tokens, cost}]
+    property var clinePeriods: []
+    property string clineError: ""
+    readonly property real clineMonthTokens: clinePeriods.length > 2 ? (clinePeriods[2].tokens || 0) : 0
+    // Bumped by updateCountdowns() so Repeater rows can re-read their own countdown
+    property int countdownTick: 0
+    // ── Muse data ───────────────────────────────────────────────────────────
+    // Muse Code. No quota properties: Meta reports the plan windows only on a
+    // billed model call, so the widget never asks (see providers/muse.py).
+    property bool museHasLogin: false
+    property string museEmail: ""
+    property string museFullName: ""
+    property string museModel: ""
+    property real museTotalTokens: 0
+    property real museInputTokens: 0
+    property real museOutputTokens: 0
+    property real museCostUSD: 0
+    // The catalog states its own currency, so the estimate is not USD by
+    // definition — keep what the backend reported rather than assuming.
+    property string museCurrency: "USD"
+    property real museModelCalls: 0
+    property string museError: ""
+    // Plan windows: only present when the user switched the billed call on.
+    property bool museQuotaOn: Plasmoid.configuration.museQuotaEnabled === true
+    property string museQuotaError: ""
+    property bool museCurrentAvailable: false
+    property real museCurrentPct: 0
+    property var museCurrentResetDate: null
+    property string museCurrentCountdown: ""
+    property bool museWeeklyAvailable: false
+    property real museWeeklyPct: 0
+    property var museWeeklyResetDate: null
+    property string museWeeklyCountdown: ""
+    // Muse CLI local activity.
+    property real museStatsTotalSessions: 0
+    property real museStatsSubagentSessions: 0
+    property real museStatsTotalMessages: 0
+    property real museStatsTotalToolCalls: 0
+    property real museStatsActiveDays: 0
+    property real museStatsSpanDays: 0
+    property real museStatsCurrentStreak: 0
+    property real museStatsLongestStreak: 0
+    property real museStatsLongestSessionMs: 0
+    property real museStatsLongestSessionMessages: 0
+    property real museStatsPeakHour: -1
+    property string museStatsFirstDate: ""
+    property var museStatsModels: ({})
+    property var museStatsDailyTokens: []
+    property var museStatsTopWorkspaces: []
     // ── Common ────────────────────────────────────────────────────────────────
     property string errorMsg: ""
     property bool stale: false
     property string lastUpdate: ""
     property int backoffMs: 0
     property bool showSettings: false
+    // Which settings section is on screen. Session-only on purpose: the panel
+    // always opens on Providers, the section people come here for.
+    property string settingsTab: "providers"
     property bool showUsageChart: Plasmoid.configuration.showUsageChart
     // Unified usage history: array of {t, s, w, cp, cw}.
     // s=Claude session%, w=Claude weekly%, cp=Codex 5h%, cw=Codex weekly%.
     // `weeklyUsageHistory` exposes {t,v} for whichever window chartWindow selects.
     property var usageHistory: []
     property string chartWindow: Plasmoid.configuration.chartWindow || "weekly"
-    readonly property int historyLimit: 500
-    // Granularity ("5h" | "24h" | "7d") is remembered across tabs so switching
-    // services keeps the same time range. Tabs with a single fixed window
-    // (antigravity/openrouter/mistral) ignore it but don't clobber it, so you
-    // return to your previous range when you go back to a multi-window tab.
+    readonly property int historyLimit: 10000
+    // Granularity ("5h" | "24h" | "7d" | "30d") is remembered across tabs so switching
+    // services keeps the same time range.
     property string chartGranularity: Plasmoid.configuration.chartGranularity || "7d"
+    // Antigravity model filter: "both" (default), "combined", "gemini", or "rest"
+    property string antigravityChartFilter: Plasmoid.configuration.antigravityChartFilter || "both"
     // Chart ranges per provider, straight from the backend: which history series
     // exist, what each one is called and how wide it is. Keyed by provider id.
     property var providerChartWindows: ({})
-    // {t, v} view of the currently-selected chart window
-    readonly property var weeklyUsageHistory: {
+
+    function seriesForHistoryKey(key, fallbackKey) {
         var win = root.currentChartWindow();
         if (!win)
             return [];
-
-        var key = win.key;
         var out = [];
         var now_ms = new Date().getTime();
         var winSize = win.size;
@@ -360,6 +469,8 @@ PlasmoidItem {
         for (var i = 0; i < root.usageHistory.length; i++) {
             var p = root.usageHistory[i];
             var v = p[key];
+            if ((v === undefined || v === null) && fallbackKey)
+                v = p[fallbackKey];
             if (v === undefined || v === null)
                 continue;
 
@@ -369,10 +480,31 @@ PlasmoidItem {
                     "v": v
                 });
         }
-        // Redraw quota resets where they actually happened, not where the next
-        // poll noticed them (see UsageHistory.withResets).
         if (win.resets)
             out = UsageHistory.withResets(out, win.resetAt * 1000, win.periodMs, minT, maxT);
+        return out;
+    }
+
+    // {t, v} view of the currently-selected chart window
+    readonly property var weeklyUsageHistory: {
+        var win = root.currentChartWindow();
+        if (!win)
+            return [];
+
+        var key = win.key;
+        var tab = root.enabledTabs[root.activeTab] || "";
+        var fallbackKey = null;
+        if (tab === "antigravity") {
+            if (root.antigravityChartFilter === "gemini") {
+                key = "agg";
+                fallbackKey = "ag";
+            } else if (root.antigravityChartFilter === "rest") {
+                key = "age";
+            } else {
+                key = "ag";
+            }
+        }
+        var out = root.seriesForHistoryKey(key, fallbackKey);
 
         // Raw money series store absolute amounts; auto-scale to their own max so the
         // spend curve fills the chart (the canvas expects a 0-100 value).
@@ -413,6 +545,9 @@ PlasmoidItem {
     readonly property color copilotPurple: "#8b5cf6"
     readonly property color deepseekBlue: "#4f8cff"
     readonly property color kimiBlue: "#1e3a8a"
+    readonly property color cursorWhite: "#e6e6e6"
+    readonly property color clineWhite: "#e6e6e6"
+    readonly property color museBlue: "#0064e0"
     readonly property color sessionColor: "#e05252"
     readonly property color weeklyColor: "#f5a623"
     readonly property color warningColor: "#ffa64d"
@@ -425,12 +560,18 @@ PlasmoidItem {
     // drift apart. Enabled state lives in Plasmoid.configuration under a fixed
     // "<id>Enabled" key. Icon filenames are listed rather than derived: the
     // "-color" suffix is inconsistent upstream artwork, not a convention.
+    // The raw envelope's provider array (id, details.stats, ...) from the
+    // latest backend snapshot — distinct from `providers` below, which is a
+    // static UI registry (label/color/icon) and never carries live stats.
+    property var rawProviders: []
     readonly property var providers: [
         {
             id: "claude",
             label: "Claude",
             color: root.claudeOrange,
-            icon: "claude-color.svg"
+            icon: "claude-color.svg",
+            keyConfig: "claudeAdminApiKey",
+            keyPlaceholder: "sk-ant-api03-…"
         },
         {
             id: "antigravity",
@@ -442,7 +583,9 @@ PlasmoidItem {
             id: "openai",
             label: "OpenAI",
             color: root.openaiGreen,
-            icon: "openai.svg"
+            icon: "openai.svg",
+            keyConfig: "openaiApiKey",
+            keyPlaceholder: "sk-proj-…"
         },
         {
             id: "kiro",
@@ -454,43 +597,97 @@ PlasmoidItem {
             id: "mistral",
             label: "Mistral",
             color: root.mistralOrange,
-            icon: "mistral-color.svg"
+            icon: "mistral-color.svg",
+            keyConfig: "mistralApiKey",
+            keyPlaceholder: i18n("empty → $MISTRAL_API_KEY")
         },
         {
             id: "openrouter",
             label: "OpenRouter",
             color: root.openrouterPurple,
-            icon: "openrouter.svg"
+            icon: "openrouter.svg",
+            keyConfig: "openrouterApiKey",
+            keyPlaceholder: i18n("empty → $OPENROUTER_API_KEY")
+        },
+        {
+            id: "ollama",
+            label: "Ollama Cloud",
+            color: "#f0f0f0",
+            icon: "ollama.svg",
+            keyConfig: "ollamaApiKey",
+            keyPlaceholder: i18n("optional — OpenCode login or $OLLAMA_API_KEY")
+        },
+        {
+            id: "selfhosted",
+            label: i18n("Local Models"),
+            color: "#38bdf8",
+            icon: "local-models.svg"
         },
         {
             id: "grok",
             label: "Grok",
             color: root.grokWhite,
-            icon: "grok.svg"
+            icon: "grok.svg",
+            keyConfig: "grokApiKey",
+            keyPlaceholder: i18n("empty → $GROK_API_KEY")
         },
         {
             id: "zai",
             label: "Z.AI",
             color: root.zaiAccent,
-            icon: "zai.svg"
+            icon: "zai.svg",
+            keyConfig: "zaiToken",
+            keyPlaceholder: i18n("empty → $ZAI_TOKEN") + " / ZCode"
         },
         {
             id: "copilot",
             label: "Copilot",
             color: root.copilotPurple,
-            icon: "copilot-color.svg"
+            icon: "githubcopilot.svg",
+            keyConfig: "githubToken",
+            keyPlaceholder: i18n("optional — gh/Copilot login is used")
         },
         {
             id: "deepseek",
             label: "DeepSeek",
             color: root.deepseekBlue,
-            icon: "deepseek-color.svg"
+            icon: "deepseek-color.svg",
+            keyConfig: "deepseekApiKey",
+            keyPlaceholder: i18n("empty → $DEEPSEEK_API_KEY")
         },
         {
             id: "kimi",
             label: "Kimi",
             color: root.kimiBlue,
-            icon: "kimi.svg"
+            icon: "kimi.svg",
+            keyConfig: "moonshotApiKey",
+            keyPlaceholder: i18n("empty → $MOONSHOT_API_KEY")
+        },
+        {
+            id: "muse",
+            label: "Muse",
+            color: root.museBlue,
+            icon: "muse-color.svg",
+            keyConfig: "museApiKey",
+            keyPlaceholder: i18n("optional — the CLI login is used")
+        },
+        {
+            id: "cursor",
+            label: "Cursor",
+            color: root.cursorWhite,
+            icon: "cursor.svg"
+        },
+        {
+            id: "cline",
+            label: "Cline",
+            color: root.clineWhite,
+            icon: "cline.svg"
+        },
+        {
+            id: "opencode",
+            label: "OpenCode",
+            color: "#B7B1B1",
+            icon: "opencode-color.svg"
         }
     ]
 
@@ -501,12 +698,21 @@ PlasmoidItem {
         }
         return null;
     }
+
+    function rawProviderById(providerId) {
+        for (var i = 0; i < root.rawProviders.length; i++) {
+            if (root.rawProviders[i] && root.rawProviders[i].id === providerId)
+                return root.rawProviders[i];
+        }
+        return null;
+    }
     // ── Accent (theme-aware) ────────────────────────────────────────────────────
     property bool useThemeAccent: Plasmoid.configuration.useThemeAccent
     // Accent for the currently active tab
     readonly property color activeAccent: root.accentFor(root.enabledTabs[root.activeTab] || "claude")
     // ── Appearance Customization ────────────────────────────────────────────────
     property int backgroundHints: Plasmoid.configuration.backgroundHints !== undefined ? Plasmoid.configuration.backgroundHints : 1
+    property int popupDecoration: Plasmoid.configuration.popupDecoration !== undefined ? Plasmoid.configuration.popupDecoration : 0
     property color cardBgColor: Plasmoid.configuration.cardBgColor || "#100a1a"
     property real cardBgOpacity: Plasmoid.configuration.cardBgOpacity !== undefined ? Plasmoid.configuration.cardBgOpacity : 0.9
     property color popupBgColor: Plasmoid.configuration.popupBgColor || "#000000"
@@ -533,6 +739,20 @@ PlasmoidItem {
         }
         return pins;
     }
+    property int panelRotationIntervalSec: PanelRotation.normalizeIntervalSec(Plasmoid.configuration.panelRotationIntervalSec)
+    property string panelRotationProviderId: ""
+    readonly property bool panelRotationEnabled: PanelRotation.isEnabled(root.panelRotationIntervalSec, root.pinnedTabs)
+
+    function normalizePanelRotation() {
+        root.panelRotationProviderId = PanelRotation.normalizeSelection(root.pinnedTabs, root.panelRotationProviderId);
+    }
+
+    function rotatePanelProvider() {
+        root.panelRotationProviderId = PanelRotation.nextSelection(root.pinnedTabs, root.panelRotationProviderId);
+    }
+
+    onPinnedTabsChanged: root.normalizePanelRotation()
+    onPanelRotationIntervalSecChanged: root.normalizePanelRotation()
     // ── Cost aggregation ─────────────────────────────────────────────────────────
     // Combined spend across paid API surfaces. Claude/OpenAI are 30-day org usage;
     // OpenRouter reports all-time credit spend, so the total is a rough combined figure.
@@ -552,6 +772,13 @@ PlasmoidItem {
     // ── Timers ────────────────────────────────────────────────────────────────
     // Poll interval is user-configurable (seconds); default 300s. Clamp to a sane floor.
     property int pollIntervalSec: Plasmoid.configuration.pollIntervalSec || 300
+    property bool pricingLoading: false
+    property string pricingStatus: ""
+    property string pricingError: ""
+    property bool providerDefaultsReady: false
+    property bool providerDefaultsInitializing: false
+    property bool providerDetectBusy: false
+    property string providerDetectStatus: ""
 
     function shellQuote(s) {
         return Shell.quote(s);
@@ -618,7 +845,35 @@ PlasmoidItem {
 
     function _historyKey() {
         var win = root.currentChartWindow();
-        return win ? win.key : "";
+        if (!win)
+            return "";
+        var tab = root.enabledTabs[root.activeTab] || "";
+        if (tab === "antigravity") {
+            if (root.antigravityChartFilter === "gemini")
+                return "agg";
+            if (root.antigravityChartFilter === "rest")
+                return "age";
+            return "ag";
+        }
+        return win.key;
+    }
+
+    function hasAnySeriesData() {
+        var win = root.currentChartWindow();
+        if (!win)
+            return false;
+        var tab = root.enabledTabs[root.activeTab] || "";
+        var key = win.key;
+        for (var i = 0; i < root.usageHistory.length; i++) {
+            var p = root.usageHistory[i];
+            if (tab === "antigravity") {
+                if (p.agg !== undefined || p.age !== undefined || p.ag !== undefined)
+                    return true;
+            } else if (p[key] !== undefined && p[key] !== null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function getChartWindowSize() {
@@ -647,51 +902,159 @@ PlasmoidItem {
 
     function loadUsageHistory() {
         var raw = Plasmoid.configuration.usageHistory || "";
+        // The config is a backup of the series, not the live store — the mirror
+        // file is, since both frontends share it. It is only read here, at startup.
+        if (!raw)
+            // Legacy weekly-only history ({t, v}); normalize() migrates the shape.
+            raw = Plasmoid.configuration.weeklyUsageHistory || "";
         if (raw) {
             try {
-                root.usageHistory = JSON.parse(raw);
-                return;
+                // restore(), not record(): the config is this widget's own backup
+                // and can be older than the shared file, so it is offered to it
+                // rather than asserted over it.
+                UsageHistory.restore(root.historyStore, JSON.parse(raw));
+                root.syncUsageHistory();
             } catch (_) {
-                root.usageHistory = [];
+                // Unparseable config — the mirror file is the real store anyway.
             }
         }
-        // Migrate legacy weekly-only history ({t, v}) into the dual-series format.
-        var legacy = Plasmoid.configuration.weeklyUsageHistory || "";
-        if (legacy) {
-            try {
-                var migrated = UsageHistory.normalize(JSON.parse(legacy), root.historyLimit);
-                root.usageHistory = migrated;
-                Plasmoid.configuration.usageHistory = JSON.stringify(migrated);
-                return;
-            } catch (_) {
-                root.usageHistory = [];
-            }
-        }
-        // No history in plasmoid config (e.g. fresh install after a reinstall) —
-        // try restoring from the mirror file on disk.
+        // Always sync with the shared mirror file on disk so points recorded in
+        // Hyprland / Quickshell are merged seamlessly when switching back.
         root.autoloadHistory();
     }
 
-    // Merge one provider's history values into the shared series. The backend
-    // decides which keys a provider contributes (see historyValues in the
-    // contract), so the frontend never has to know a provider's chart series.
-    function recordHistoryValues(values) {
-        var history = UsageHistory.merge(root.usageHistory, values, new Date().getTime(), root.historyLimit);
-        if (history === root.usageHistory)
+    // The save protocol is in UsageHistory.js, shared with the Quickshell panel;
+    // what is left here is the transport, the clock and the timers. The store's
+    // `ready` flag is what keeps the mirror file from being written before the
+    // startup autoload has answered — that read is async while the poll timer
+    // fires at once, and a write that got in first would drop everything recorded
+    // under Hyprland. `historyLimit` is readonly, so this binding runs once.
+    property var historyStore: UsageHistory.newStore(root.historyLimit)
+    // JSON form of usageHistory, kept alongside it so nothing has to re-serialize
+    // ~30-100 KiB to find out whether anything actually changed.
+    property string historyJson: "[]"
+    property bool historyConfigDirty: false
+    // The command the batch in flight went out on, so the watchdog can drop it.
+    property string historySaveCmd: ""
+
+    // Publish the store's series to the bindings. It replaces `history` rather
+    // than patching it, so an unchanged reference means nothing to repaint.
+    function syncUsageHistory() {
+        if (root.usageHistory === root.historyStore.history)
             return;
 
-        root.usageHistory = history;
-        var json = JSON.stringify(history);
-        Plasmoid.configuration.usageHistory = json;
-        // Mirror to a file so history survives a full uninstall/reinstall.
-        root.autosaveHistory(json);
+        root.usageHistory = root.historyStore.history;
+        // Same content, different array: worth the reference swap, not a rewrite
+        // of every widget's config.
+        if (root.historyJson === root.historyStore.json)
+            return;
+
+        root.historyJson = root.historyStore.json;
+        root.historyConfigDirty = true;
     }
 
-    // Silently mirror history JSON to ~/.local/share/ai-usage-widget/usage-history-latest.json
-    function autosaveHistory(json) {
-        var cmd = root.pythonEnv() + "WIDGET_HISTORY_JSON=\"$(printf %s '" + root.base64(json) + "' | base64 -d)\" " + root.scriptPath("history-io") + " autosave";
-        historyIOSource.disconnectSource(cmd);
-        historyIOSource.connectSource(cmd);
+    // What the config is allowed to hold. Plasma rewrites
+    // plasma-org.kde.plasma.desktop-appletsrc — the config of every widget on the
+    // desktop — whole on each change, so the series has no business going through
+    // it: the mirror file is the store, and the config only has to seed a fresh
+    // install. It also bounds the startup seed, which is built from it and travels
+    // a command line.
+    readonly property int historyConfigLimit: 500
+
+    function flushHistoryConfig() {
+        if (!root.historyConfigDirty)
+            return;
+
+        root.historyConfigDirty = false;
+        var points = root.usageHistory;
+        // historyJson is already the whole series serialized, so only a tail costs
+        // anything to produce.
+        Plasmoid.configuration.usageHistory = points.length > root.historyConfigLimit ? JSON.stringify(points.slice(points.length - root.historyConfigLimit)) : root.historyJson;
+    }
+
+    Timer {
+        interval: 600000
+        running: true
+        repeat: true
+        onTriggered: root.flushHistoryConfig()
+    }
+
+    // One poll's provider values — the backend decides which keys a provider
+    // contributes (historyValues in the contract). Called on every snapshot even
+    // when none reported, which is what releases a save that failed.
+    function recordHistoryValues(values) {
+        UsageHistory.record(root.historyStore, values, new Date().getTime());
+        root.syncUsageHistory();
+        root.saveHistory();
+    }
+
+    // Ship the next batch to ~/.local/share/ai-usage-widget/usage-history-latest.json,
+    // shared with the Quickshell frontend. history-io unions it in and hands the
+    // merged series back, so this is also how the other frontend's points arrive.
+    // take() decides whether there is anything to send, and what.
+    function saveHistory() {
+        var batch = UsageHistory.take(root.historyStore);
+        if (!batch)
+            return;
+
+        historySaveTimeout.restart();
+        // Pass the payload base64-encoded and decode it inside the shell, so the
+        // JSON (quotes, brackets) never has to survive command-line quoting.
+        root.historySaveCmd = root.pythonEnv() + "WIDGET_HISTORY_JSON=\"$(printf %s '" + root.base64(JSON.stringify(batch.points)) + "' | base64 -d)\" " + root.scriptPath("history-io") + " " + batch.op;
+        historyIOSource.disconnectSource(root.historySaveCmd);
+        historyIOSource.connectSource(root.historySaveCmd);
+    }
+
+    function finishHistorySave(merged) {
+        historySaveTimeout.stop();
+        root.historySaveCmd = "";
+        UsageHistory.done(root.historyStore, merged);
+        root.syncUsageHistory();
+        // Whatever queued up while that batch was out goes now.
+        root.saveHistory();
+    }
+
+    function failHistorySave() {
+        historySaveTimeout.stop();
+        // Drop the source too: answering after the watchdog has given up would
+        // otherwise be taken for the answer to whatever went out since.
+        if (root.historySaveCmd !== "")
+            historyIOSource.disconnectSource(root.historySaveCmd);
+
+        root.historySaveCmd = "";
+        UsageHistory.failed(root.historyStore);
+    }
+
+    // A save that never answers would hold its batch in flight for the rest of
+    // the session and stop this widget mirroring at all.
+    Timer {
+        id: historySaveTimeout
+
+        interval: 30000
+        repeat: false
+        onTriggered: root.failHistorySave()
+    }
+
+    // The startup read is done (or gave up): the mirror is ours to write again.
+    function releaseHistoryMirror() {
+        if (root.historyStore.ready)
+            return;
+
+        historyMirrorTimeout.stop();
+        UsageHistory.opened(root.historyStore);
+        root.saveHistory();
+    }
+
+    // Waiting for the read is only ever a short deferral. If the answer never
+    // comes — no shell tool, a command that never reports back — mirroring again
+    // beats a widget that silently stops saving to disk for the rest of its life.
+    Timer {
+        id: historyMirrorTimeout
+
+        interval: 15000
+        running: true
+        repeat: false
+        onTriggered: root.releaseHistoryMirror()
     }
 
     // Restore from the mirror file when plasmoid config has no history (e.g. fresh install).
@@ -735,28 +1098,31 @@ PlasmoidItem {
             grabItem.grabToImage(function (result) {
                 root._exportHideHeader = false;
                 if (!result.saveToFile(tmpPng)) {
-                    exportSaveSource.disconnectSource("notify-send 'AI Usage Widget' 'Export failed: could not capture image'");
-                    exportSaveSource.connectSource("notify-send 'AI Usage Widget' 'Export failed: could not capture image'");
+                    var failCmd = "notify-send " + root.shellQuote("AI Usage Widget") + " " + root.shellQuote(i18n("Export failed: could not capture image"));
+                    exportSaveSource.disconnectSource(failCmd);
+                    exportSaveSource.connectSource(failCmd);
                     return;
                 }
-                // Use $HOME in the shell so it always resolves correctly regardless of QML context
-                var destPath = "$HOME/Downloads/" + baseName + "." + format;
-                var cmd = "mkdir -p \"$HOME/Downloads\" && " + root.pythonEnv() + root.scriptPath("export-snapshot") + " " + root.shellQuote(format) + " " + root.shellQuote(tmpPng) + " \"" + destPath + "\"";
+                // Save into the XDG Downloads directory, whose name is localized
+                // (~/Téléchargements in French, ~/Downloads elsewhere). xdg-user-dir
+                // ships with every freedesktop desktop; fall back to the
+                // conventional English name only when it is missing.
+                var fileName = baseName + "." + format;
+                var cmd = "dl=\"$(xdg-user-dir DOWNLOAD 2>/dev/null || printf %s \"$HOME/Downloads\")\"; mkdir -p \"$dl\" && " + root.pythonEnv() + root.scriptPath("export-snapshot") + " " + root.shellQuote(format) + " " + root.shellQuote(tmpPng) + " \"$dl/" + fileName + "\"";
                 if (format === "svg")
                     cmd += " " + root._exportW + " " + root._exportH;
 
-                cmd += " && notify-send 'AI Usage Widget' 'Saved to ~/Downloads/" + baseName + "." + format + "'";
+                cmd += " && notify-send " + root.shellQuote("AI Usage Widget") + " \"$(printf " + root.shellQuote(i18n("Saved to %1", "%s")) + " \"$dl/" + fileName + "\")\"";
                 exportSaveSource.disconnectSource(cmd);
                 exportSaveSource.connectSource(cmd);
             });
         });
     }
 
+    // history-io snapshots the shared file itself — see the note there for why the
+    // series does not travel on a command line.
     function exportHistory() {
-        var json = JSON.stringify(root.usageHistory);
-        // Pass the payload base64-encoded and decode it inside the shell, so the JSON
-        // (quotes, brackets) never has to survive command-line quoting.
-        var cmd = root.pythonEnv() + "WIDGET_HISTORY_JSON=\"$(printf %s '" + root.base64(json) + "' | base64 -d)\" " + root.scriptPath("history-io") + " export";
+        var cmd = root.pythonEnv() + root.scriptPath("history-io") + " export";
         historyIOSource.disconnectSource(cmd);
         historyIOSource.connectSource(cmd);
     }
@@ -768,13 +1134,50 @@ PlasmoidItem {
     }
 
     function tabColor(tabId) {
+        if (FeatureTabs.isFeatureTab(tabId)) {
+            var accent = FeatureTabs.accent(tabId);
+            return accent !== "" ? accent : Kirigami.Theme.highlightColor;
+        }
         var p = root.providerById(tabId);
         return p ? p.color : Kirigami.Theme.textColor;
     }
 
     function tabName(tabId) {
+        if (FeatureTabs.isFeatureTab(tabId))
+            return FeatureTabs.label(tabId, i18n);
         var p = root.providerById(tabId);
         return p ? p.label : tabId;
+    }
+
+    // Open the tab used last time, or the first provider on a fresh widget —
+    // never a feature view by default, since the panel mirrors the active tab
+    // and a feature view has no meter of its own. Resolved by id, so it stays
+    // on the same tab when providers are enabled or disabled around it.
+    function restoreTab() {
+        if (root.pinnedTabs.length > 0) {
+            var pinned = root.enabledTabs.indexOf(root.pinnedTabs[0]);
+            if (pinned >= 0) {
+                root.activeTab = pinned;
+                return;
+            }
+        }
+        var idx = root.enabledTabs.indexOf(root.savedTab);
+        for (var i = 0; idx < 0 && i < root.enabledTabs.length; i++) {
+            if (!FeatureTabs.isFeatureTab(root.enabledTabs[i]))
+                idx = i;
+        }
+        root.activeTab = Math.max(0, idx);
+    }
+
+    // Switch the popup to a provider (or feature) tab by id.
+    function selectTab(tabId) {
+        var idx = root.enabledTabs.indexOf(tabId);
+        if (idx < 0)
+            return;
+        root.activeTab = idx;
+        root.errorMsg = "";
+        if (!FeatureTabs.isFeatureTab(tabId))
+            root.refresh();
     }
 
     function formatMoney(value, currency) {
@@ -789,13 +1192,129 @@ PlasmoidItem {
         return amount + (cur ? " " + cur : "");
     }
 
+    // Rate-limit tier shown in the Claude header, with the known words
+    // localized ("default_claude_ai" → "Par défaut", "default_max_20x" →
+    // "Par défaut Max 20x", …). Unknown words keep a capitalized form.
+    // The backend emits stable English tokens (the wire contract is never
+    // localized). Translate the fixed ones by literal id here, so xgettext can
+    // extract them and the i18n tooling keeps context and plurals.
+    function errorText(token) {
+        if (token === "offline")
+            return i18n("offline");
+        if (token === "token expired")
+            return i18n("token expired");
+        if (token === "access denied")
+            return i18n("access denied");
+        if (token === "rate limited")
+            return i18n("rate limited");
+        if (token.indexOf("err ") === 0)
+            return i18n("err %1", token.slice(4));
+        return token;
+    }
+
+    function windowLabel(label) {
+        if (label === "5H")
+            return i18n("5H");
+        if (label === "24H")
+            return i18n("24H");
+        if (label === "7D")
+            return i18n("7D");
+        if (label === "30D")
+            return i18n("30D");
+        return label;
+    }
+
+    function antigravityGroupLabel(label) {
+        if (label === "Gemini Models")
+            return i18n("Gemini Models");
+        if (label === "Claude & GPT Models")
+            return i18n("Claude & GPT Models");
+        return label;
+    }
+
+    // Kimi Code windows arrive as a length in seconds (or a vendor name); the
+    // backend's English label stays for the CLI.
+    function kimiWindowLabel(w) {
+        if (w.name)
+            return w.name;
+        var s = w.seconds || 0;
+        if (s === 604800)
+            return i18n("Weekly limit");
+        if (s === 86400)
+            return i18n("Daily limit");
+        if (s && s % 86400 === 0)
+            return i18np("%1-day limit", "%1-day limit", s / 86400);
+        if (s && s % 3600 === 0)
+            return i18np("%1-hour limit", "%1-hour limit", s / 3600);
+        if (s)
+            return i18np("%1-minute limit", "%1-minute limit", Math.floor(s / 60));
+        return i18n("Plan usage");
+    }
+
+    // Kimi's own wording when it sends one; the backend's fallback is English.
+    function kimiPlanMessageText() {
+        if (root.kimiPlanMessage === "" || root.kimiPlanMessage === "Plan quota used up")
+            return i18n("Plan quota used up");
+        return root.kimiPlanMessage;
+    }
+
+    function clinePeriodLabel(p) {
+        if (p.key === "cline_today")
+            return i18n("Today");
+        if (p.key === "cline_7d")
+            return i18n("Last 7 days");
+        if (p.key === "cline_30d")
+            return i18n("Last 30 days");
+        return p.label;
+    }
+
+    function grokQuotaWindowText() {
+        return root.grokQuotaWindow === "rolling 24h" ? i18n("rolling 24h") : root.grokQuotaWindow;
+    }
+
+    function claudeTierLabel() {
+        var raw = root.claudeRateLimitTier;
+        if (!raw)
+            return "";
+        var parts = String(raw).replace(/_claude_ai$/i, "").split("_");
+        var words = [];
+        for (var i = 0; i < parts.length; i++) {
+            var w = parts[i];
+            if (w === "default")
+                words.push(i18nc("rate limit tier", "default"));
+            else if (w === "pro")
+                words.push(i18nc("rate limit tier", "pro"));
+            else if (w === "max")
+                words.push(i18nc("rate limit tier", "max"));
+            else if (w === "business")
+                words.push(i18nc("rate limit tier", "business"));
+            else if (w === "free")
+                words.push(i18nc("rate limit tier", "free"));
+            else
+                words.push(w.charAt(0).toUpperCase() + w.slice(1));
+        }
+        return words.join(" ");
+    }
+
+    function effortLabel(level) {
+        if (level === "high")
+            return i18nc("effort level", "high");
+        if (level === "low")
+            return i18nc("effort level", "low");
+        if (level === "medium")
+            return i18nc("effort level", "medium");
+        return level;
+    }
+
     // Resolve a service's accent: the Plasma highlight color when theme accent is on,
     // otherwise the service's own brand color.
     // Brand logo for a tab, or "" when the provider has no artwork yet (callers
     // fall back to the plain colour dot).
     function tabIcon(tabId) {
+        if (FeatureTabs.isFeatureTab(tabId))
+            return "";
         var p = root.providerById(tabId);
-        return p ? Qt.resolvedUrl("../icons/" + p.icon) : "";
+        return p && p.icon ? Qt.resolvedUrl("../icons/" + p.icon) : "";
     }
 
     function accentFor(tabId) {
@@ -816,7 +1335,9 @@ PlasmoidItem {
     }
 
     function panelShows(tabId) {
-        return root.pinnedTabs.length > 0 ? root.isPinned(tabId) : root.panelTab === tabId;
+        if (root.pinnedTabs.length === 0)
+            return root.panelTab === tabId;
+        return root.panelRotationEnabled ? root.panelTab === tabId : root.isPinned(tabId);
     }
 
     // Whether the provider's panel pill(s) are on screen right now — the
@@ -846,6 +1367,8 @@ PlasmoidItem {
     }
 
     function togglePin(tabId) {
+        if (FeatureTabs.isFeatureTab(tabId))
+            return;
         var pins = root.pinnedTabs.slice();
         var pos = pins.indexOf(tabId);
         if (pos >= 0)
@@ -866,44 +1389,10 @@ PlasmoidItem {
     }
 
     // ── Burn-rate / ETA ─────────────────────────────────────────────────────────
-    // Linear slope (%/hour) over up to the last `windowMs` of the given series key
-    // ("s" session or "w" weekly). Returns null when not enough recent data.
+    // Slope (%/hour) over up to the last `windowMs` of the given series key, or
+    // null when there is not enough recent data. See UsageHistory.slopePerHour.
     function usageSlopePerHour(seriesKey, windowMs) {
-        var pts = root.usageHistory;
-        if (!pts || pts.length < 2)
-            return null;
-
-        var now = pts[pts.length - 1].t;
-        var cutoff = now - windowMs;
-        var xs = [], ys = [];
-        for (var i = 0; i < pts.length; i++) {
-            var v = pts[i][seriesKey];
-            if (v === undefined || v === null)
-                continue;
-
-            if (pts[i].t < cutoff)
-                continue;
-
-            xs.push(pts[i].t);
-            ys.push(v);
-        }
-        if (xs.length < 2)
-            return null;
-
-        // least-squares slope in % per ms, then scale to per hour
-        var n = xs.length, sx = 0, sy = 0, sxx = 0, sxy = 0;
-        for (var j = 0; j < n; j++) {
-            sx += xs[j];
-            sy += ys[j];
-            sxx += xs[j] * xs[j];
-            sxy += xs[j] * ys[j];
-        }
-        var denom = n * sxx - sx * sx;
-        if (denom === 0)
-            return null;
-
-        var slopePerMs = (n * sxy - sx * sy) / denom;
-        return slopePerMs * 3.6e+06;
+        return UsageHistory.slopePerHour(root.usageHistory, seriesKey, windowMs);
     }
 
     // ETA text to reach 100% for a series given its current value. Returns "" when
@@ -924,12 +1413,12 @@ PlasmoidItem {
             return "";
 
         if (hoursLeft < 1)
-            return "~" + Math.max(1, Math.round(hoursLeft * 60)) + "m to 100%";
+            return i18n("~%1m to 100%", Math.max(1, Math.round(hoursLeft * 60)));
 
         if (hoursLeft < 24)
-            return "~" + hoursLeft.toFixed(1).replace(/\.0$/, "") + "h to 100%";
+            return i18n("~%1h to 100%", hoursLeft.toFixed(1).replace(/\.0$/, ""));
 
-        return "~" + Math.round(hoursLeft / 24) + "d to 100%";
+        return i18n("~%1d to 100%", Math.round(hoursLeft / 24));
     }
 
     // Period-over-period comparison: current value vs the sample closest to `periodMs` ago.
@@ -963,9 +1452,9 @@ PlasmoidItem {
 
         var diff = Math.round(currentPct - best);
         if (diff === 0)
-            return "≈ same as " + periodLabel;
+            return i18n("≈ same as %1", periodLabel);
 
-        return (diff > 0 ? "+" : "") + diff + "% vs " + periodLabel;
+        return i18n("%1 vs %2", (diff > 0 ? "+" : "") + diff + "%", periodLabel);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -989,15 +1478,16 @@ PlasmoidItem {
         var m = totalMins % 60;
         var parts = [];
         if (d > 0)
-            parts.push(d + "d");
+            // xgettext:no-javascript-format
+            parts.push(i18nc("duration in days, abbreviated", "%1d", d));
 
         if (h > 0)
-            parts.push(h + "h");
+            parts.push(i18nc("duration in hours, abbreviated", "%1h", h));
 
         if (d === 0 && m > 0)
-            parts.push(m + "m");
+            parts.push(i18nc("duration in minutes, abbreviated", "%1m", m));
 
-        return parts.length ? parts.join(" ") : "<1m";
+        return parts.length ? parts.join(" ") : i18n("<1m");
     }
 
     function formatCountdown(targetDate) {
@@ -1017,6 +1507,10 @@ PlasmoidItem {
         root.zaiSessionCountdown = root.formatCountdown(root.zaiSessionResetDate);
         root.zaiWeeklyCountdown = root.formatCountdown(root.zaiWeeklyResetDate);
         root.copilotCountdown = root.formatCountdown(root.copilotResetDate);
+        root.museCurrentCountdown = root.formatCountdown(root.museCurrentResetDate);
+        root.museWeeklyCountdown = root.formatCountdown(root.museWeeklyResetDate);
+        root.cursorCountdown = root.formatCountdown(root.cursorResetDate);
+        root.countdownTick++;
     }
 
     function usageColor(pct) {
@@ -1053,7 +1547,8 @@ PlasmoidItem {
             "description": "",
             "components": [],
             "incidents": [],
-            "latestUpdate": ""
+            "latestUpdate": "",
+            "url": ""
         };
     }
 
@@ -1076,7 +1571,76 @@ PlasmoidItem {
     // touch it. Reuses envAssign's base64 round-trip because a path may contain
     // spaces or shell metacharacters.
     function pythonEnv() {
-        return root.envAssign("PYTHON3", String(Plasmoid.configuration.pythonPath || "").trim());
+        var env = root.envAssign("PYTHON3", String(Plasmoid.configuration.pythonPath || "").trim());
+        // Let the backend load the catalog of the applet it is actually
+        // installed as — the test copy renames its .mo to its own id.
+        env += root.envAssign("AI_USAGE_I18N_DOMAIN", "plasma_applet_" + (Plasmoid.metaData ? Plasmoid.metaData.pluginId : ""));
+        return env;
+    }
+
+    // Providers main.xml ships switched on. A fresh widget turns these off
+    // unless detected; every other provider already defaults off.
+    readonly property var legacyDefaultOnProviders: ["claude", "antigravity", "openai", "kiro", "grok"]
+
+    function applyDetectedProviders(detected) {
+        var ids = ["claude", "antigravity", "openai", "kiro", "mistral", "openrouter", "ollama", "selfhosted", "grok", "zai", "copilot", "deepseek", "kimi", "muse", "cursor", "cline", "opencode"];
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            var key = id + "Enabled";
+            if (detected.indexOf(id) !== -1)
+                Plasmoid.configuration[key] = true;
+            else if (root.legacyDefaultOnProviders.indexOf(id) !== -1)
+                Plasmoid.configuration[key] = false;
+        }
+    }
+
+    function initializeProviderDefaults() {
+        if (Plasmoid.configuration.providerDefaultsApplied === true) {
+            root.providerDefaultsReady = true;
+            return;
+        }
+        // A widget that has stored usage history was in use before
+        // zero-default: keep exactly the providers it shows and never probe.
+        if ((Plasmoid.configuration.usageHistory || "") !== "") {
+            Plasmoid.configuration.providerDefaultsApplied = true;
+            root.providerDefaultsReady = true;
+            return;
+        }
+        root.providerDefaultsInitializing = true;
+        var cmd = root.pythonEnv() + root.scriptPath("get-ai-usage") + " --detect-providers";
+        providerDefaultsSource.disconnectSource(cmd);
+        providerDefaultsSource.connectSource(cmd);
+    }
+
+    // Settings → Providers → "Detect installed providers": re-runs the
+    // stat-only detection and switches on what it finds (never off).
+    function redetectProviders() {
+        if (root.providerDetectBusy)
+            return;
+        root.providerDetectBusy = true;
+        root.providerDetectStatus = "";
+        var cmd = root.pythonEnv() + root.scriptPath("get-ai-usage") + " --detect-providers";
+        providerRedetectSource.disconnectSource(cmd);
+        providerRedetectSource.connectSource(cmd);
+    }
+
+    function applyProviderRedetect(result) {
+        root.providerDetectBusy = false;
+        if (!result || result.ok !== true || !Array.isArray(result.data)) {
+            root.providerDetectStatus = i18n("Detection failed.");
+            return;
+        }
+        var added = [];
+        for (var i = 0; i < root.providers.length; i++) {
+            var p = root.providers[i];
+            if (result.data.indexOf(p.id) !== -1 && !Plasmoid.configuration[p.id + "Enabled"]) {
+                Plasmoid.configuration[p.id + "Enabled"] = true;
+                added.push(p.label || p.id);
+            }
+        }
+        root.providerDetectStatus = added.length ? i18n("Enabled: %1", added.join(", ")) : i18n("No new providers found.");
+        if (added.length)
+            root.refresh();
     }
 
     function backendCommand(ids) {
@@ -1085,9 +1649,15 @@ PlasmoidItem {
         env += root.envAssign("WIDGET_OPENAI_API_KEY", Plasmoid.configuration.openaiApiKey);
         env += root.envAssign("WIDGET_MISTRAL_API_KEY", Plasmoid.configuration.mistralApiKey);
         env += root.envAssign("WIDGET_OPENROUTER_API_KEY", Plasmoid.configuration.openrouterApiKey);
+        env += root.envAssign("WIDGET_OLLAMA_API_KEY", Plasmoid.configuration.ollamaApiKey);
+        env += root.envAssign("WIDGET_SELFHOSTED_ENDPOINT", Plasmoid.configuration.selfhostedEndpoint);
+        env += root.envAssign("WIDGET_SELFHOSTED_ENGINE", Plasmoid.configuration.selfhostedEngine);
+        env += root.envAssign("WIDGET_SELFHOSTED_KEY", Plasmoid.configuration.selfhostedKey);
         env += root.envAssign("WIDGET_GROK_API_KEY", Plasmoid.configuration.grokApiKey);
         env += root.envAssign("WIDGET_ZAI_TOKEN", Plasmoid.configuration.zaiToken);
         env += root.envAssign("WIDGET_GITHUB_TOKEN", Plasmoid.configuration.githubToken);
+        env += root.envAssign("WIDGET_MUSE_API_KEY", Plasmoid.configuration.museApiKey);
+        env += "WIDGET_MUSE_QUOTA=" + (Plasmoid.configuration.museQuotaEnabled === true ? "1" : "0") + " ";
         env += root.envAssign("WIDGET_DEEPSEEK_API_KEY", Plasmoid.configuration.deepseekApiKey);
         env += root.envAssign("WIDGET_MOONSHOT_API_KEY", Plasmoid.configuration.moonshotApiKey);
         var quota = parseInt(Plasmoid.configuration.copilotQuota || 300);
@@ -1103,11 +1673,13 @@ PlasmoidItem {
         try {
             snapshot = JSON.parse(text);
         } catch (_) {
-            root.errorMsg = "usage backend unavailable";
+            root.errorMsg = i18n("usage backend unavailable");
             root.stale = root.lastUpdate !== "";
             return;
         }
         var providers = snapshot.providers || [];
+        root.rawProviders = providers;
+        root.localSpend = snapshot.localSpend || ({});
         var active = root.enabledTabs[root.activeTab] || "";
         var activeSeen = false;
         var activeError = "";
@@ -1141,6 +1713,8 @@ PlasmoidItem {
             return;
         }
         root.stale = root.lastUpdate !== "";
+        // The backend emits these as stable English tokens (the wire contract is
+        // not localized); only the displayed string is translated, by tr().
         if (activeError === "offline") {
             offlineRetryTimer.restart();
         } else if (activeError === "rate limited") {
@@ -1152,6 +1726,10 @@ PlasmoidItem {
 
     function applyProvider(provider) {
         var details = provider.details || {};
+        // Reassigned, not patched: a `property var` only notifies on assignment.
+        var statuses = Object.assign({}, root.providerStatus);
+        statuses[provider.id] = details.status || root.emptyStatus();
+        root.providerStatus = statuses;
         if (provider.id === "claude")
             root.applyClaude(details);
         else if (provider.id === "openai")
@@ -1164,6 +1742,10 @@ PlasmoidItem {
             root.applyMistral(details, provider.error || "");
         else if (provider.id === "openrouter")
             root.applyOpenRouter(details, provider.error || "");
+        else if (provider.id === "ollama")
+            root.applyOllama(provider);
+        else if (provider.id === "selfhosted")
+            root.selfhostedProvider = provider;
         else if (provider.id === "grok")
             root.applyGrok(details, provider.error || "");
         else if (provider.id === "zai")
@@ -1174,6 +1756,12 @@ PlasmoidItem {
             root.applyDeepSeek(details, provider.error || "");
         else if (provider.id === "kimi")
             root.applyKimi(details, provider.error || "");
+        else if (provider.id === "muse")
+            root.applyMuse(details, provider.error || "");
+        else if (provider.id === "cursor")
+            root.applyCursor(details, provider.error || "");
+        else if (provider.id === "cline")
+            root.applyCline(details, provider.error || "");
     }
 
     function applyClaude(d) {
@@ -1210,7 +1798,6 @@ PlasmoidItem {
         root.claudeTotalInputTokens = org.totalInputTokens || 0;
         root.claudeTotalOutputTokens = org.totalOutputTokens || 0;
         root.claudeTotalCostUSD = org.totalCostUSD || 0;
-        root.claudeStatus = d.status || root.emptyStatus();
         var stats = d.stats || {};
         root.claudeStatsAvailable = stats.available === true;
         root.claudeStatsVersion = stats.version || 0;
@@ -1281,7 +1868,6 @@ PlasmoidItem {
         root.openaiTotalInputTokens = org.totalInputTokens || 0;
         root.openaiTotalOutputTokens = org.totalOutputTokens || 0;
         root.openaiTotalCostUSD = org.totalCostUSD || 0;
-        root.openaiStatus = d.status || root.emptyStatus();
         var stats = d.stats || {};
         root.codexStatsAvailable = stats.available === true;
         root.codexStatsTotalSessions = stats.totalSessions || 0;
@@ -1300,6 +1886,7 @@ PlasmoidItem {
         root.codexStatsFavoriteModel = stats.favoriteModel || "";
         root.codexStatsModels = stats.models || ({});
         root.codexStatsDailyTokens = stats.dailyTokens || [];
+        root.codexStatsTotalCostUSD = stats.totalCostUSD || 0;
         root.codexModel = stats.model || "";
         root.codexEffortLevel = stats.effortLevel || "";
         root.ensureAvailableChartWindow("openai");
@@ -1339,8 +1926,8 @@ PlasmoidItem {
     function applyKiro(d) {
         root.kiroUsageAvailable = d.available === true;
         root.kiroPlanType = d.planType || "";
-        root.kiroDisplayName = d.displayName || "Credit";
-        root.kiroDisplayNamePlural = d.displayNamePlural || "Credits";
+        root.kiroDisplayName = d.displayName || i18n("Credit");
+        root.kiroDisplayNamePlural = d.displayNamePlural || i18n("Credits");
         root.kiroCurrentUsage = d.currentUsage || 0;
         root.kiroUsageLimit = d.usageLimit || 0;
         root.kiroPct = d.pct || 0;
@@ -1353,6 +1940,7 @@ PlasmoidItem {
         root.kiroCurrencySymbol = d.currencySymbol || "$";
         root.kiroResetDate = root.dateFromEpoch(d.resetAt);
         root.kiroResetTime = root.kiroResetDate ? Qt.formatDateTime(root.kiroResetDate, "MMM d, hh:mm") : "";
+        root.kiroSource = d.source || "";
     }
 
     function applyMistral(d, error) {
@@ -1360,7 +1948,6 @@ PlasmoidItem {
         root.mistralKeyValid = d.keyValid === true;
         root.mistralAvailableModels = d.availableModels || [];
         root.mistralError = error;
-        root.mistralStatus = d.status || root.emptyStatus();
         var vibe = d.vibe || {};
         root.mistralVibeSessionCount = vibe.sessionCount || 0;
         root.mistralVibeTotalCost = vibe.totalCost || 0;
@@ -1384,7 +1971,15 @@ PlasmoidItem {
         root.openrouterIsFreeTier = d.isFreeTier === true;
         root.openrouterRateLimit = d.rateLimit || ({});
         root.openrouterError = error;
-        root.openrouterStatus = d.status || root.emptyStatus();
+    }
+
+    function applyOllama(provider) {
+        var d = provider.details || {};
+        root.ollamaWindows = provider.quotaWindows || [];
+        root.ollamaModels = d.models || ({});
+        root.ollamaActivityCost = d.activityCost || "";
+        root.ollamaError = provider.error || "";
+        root.ollamaPct = provider.summary ? (provider.summary.pct || 0) : 0;
     }
 
     function applyGrok(d, error) {
@@ -1454,7 +2049,26 @@ PlasmoidItem {
         root.copilotQuota = d.quota === undefined ? (Plasmoid.configuration.copilotQuota || 300) : d.quota;
         root.copilotPct = d.pct || 0;
         root.copilotResetDate = root.dateFromEpoch(d.resetAt);
+        root.copilotUnlimited = d.unlimited === true;
+        root.copilotPlan = d.plan || "";
         root.copilotError = error;
+        var cstats = d.stats || {};
+        root.copilotStatsAvailable = cstats.available === true;
+        root.copilotStatsTotalSessions = cstats.totalSessions || 0;
+        root.copilotStatsTotalMessages = cstats.totalMessages || 0;
+        root.copilotStatsTotalToolCalls = cstats.totalToolCalls || 0;
+        root.copilotStatsTotalFiles = cstats.totalFiles || 0;
+        root.copilotStatsTotalRepositories = cstats.totalRepositories || 0;
+        root.copilotStatsTopRepositories = cstats.topRepositories || [];
+        root.copilotStatsFirstDate = cstats.firstDate || "";
+        root.copilotStatsActiveDays = cstats.activeDays || 0;
+        root.copilotStatsSpanDays = cstats.spanDays || 0;
+        root.copilotStatsCurrentStreak = cstats.currentStreak || 0;
+        root.copilotStatsLongestStreak = cstats.longestStreak || 0;
+        root.copilotStatsLongestSessionMs = cstats.longestSessionMs || 0;
+        root.copilotStatsLongestSessionMessages = cstats.longestSessionMessages || 0;
+        root.copilotStatsPeakHour = cstats.peakHour === undefined ? -1 : cstats.peakHour;
+        root.copilotStatsDailyMessages = cstats.dailySeries || [];
     }
 
     function applyDeepSeek(d, error) {
@@ -1476,9 +2090,86 @@ PlasmoidItem {
         root.kimiVoucherBalance = d.voucherBalance || 0;
         root.kimiCashBalance = d.cashBalance || 0;
         root.kimiError = error;
+        var plan = d.codePlan || {};
+        root.kimiPlanAvailable = plan.available === true;
+        root.kimiPlanExhausted = plan.exhausted === true;
+        root.kimiPlanMessage = plan.message || "";
+        root.kimiPlanError = plan.error || "";
+        root.kimiPlanWindows = plan.windows || [];
+        root.kimiBooster = plan.booster || null;
+        var pct = root.kimiPlanExhausted && root.kimiPlanWindows.length === 0 ? 100 : 0;
+        for (var i = 0; i < root.kimiPlanWindows.length; i++)
+            pct = Math.max(pct, root.kimiPlanWindows[i].pct || 0);
+        root.kimiPlanPct = pct;
+    }
+
+    function applyCursor(d, error) {
+        root.cursorLoggedIn = d.loggedIn === true;
+        root.cursorAvailable = error === "";
+        root.cursorSource = d.source || "";
+        root.cursorPlanName = d.planName || "";
+        root.cursorTotalPct = d.totalPct || 0;
+        root.cursorAutoPct = d.autoPct || 0;
+        root.cursorApiPct = d.apiPct || 0;
+        root.cursorHasSplit = d.hasSplit === true;
+        root.cursorIncludedSpend = d.includedSpend || 0;
+        root.cursorLimit = d.limit || 0;
+        root.cursorOnDemandUsed = d.onDemandUsed || 0;
+        root.cursorOnDemandLimit = d.onDemandLimit || 0;
+        root.cursorResetDate = root.dateFromEpoch(d.resetAt);
+        root.cursorResetTime = root.cursorResetDate ? Qt.formatDateTime(root.cursorResetDate, "MMM d, hh:mm") : "";
+        root.cursorError = error;
+        root.cursorStats = d.stats || ({});
+    }
+
+    function applyCline(d, error) {
+        root.clineStats = d.stats || ({});
+        root.clinePeriods = d.periods || [];
+        root.clineError = error;
+    }
+
+    function applyMuse(d, error) {
+        root.museHasLogin = d.hasLogin === true;
+        root.museEmail = d.email || "";
+        root.museFullName = d.fullName || "";
+        root.museError = error;
+        var current = d.current || {};
+        var weekly = d.weekly || {};
+        root.museQuotaError = d.quotaError || "";
+        root.museCurrentAvailable = current.available === true;
+        root.museCurrentPct = current.pct || 0;
+        root.museCurrentResetDate = root.dateFromEpoch(current.resetAt);
+        root.museWeeklyAvailable = weekly.available === true;
+        root.museWeeklyPct = weekly.pct || 0;
+        root.museWeeklyResetDate = root.dateFromEpoch(weekly.resetAt);
+        var stats = d.stats || {};
+        root.museModel = stats.model || "";
+        root.museTotalTokens = stats.totalTokens || 0;
+        root.museInputTokens = stats.totalInputTokens || 0;
+        root.museOutputTokens = stats.totalOutputTokens || 0;
+        root.museCostUSD = stats.totalCostUSD || 0;
+        root.museCurrency = stats.currency || "USD";
+        root.museModelCalls = stats.totalModelCalls || 0;
+        root.museStatsTotalSessions = stats.totalSessions || 0;
+        root.museStatsSubagentSessions = stats.subagentSessions || 0;
+        root.museStatsTotalMessages = stats.totalMessages || 0;
+        root.museStatsTotalToolCalls = stats.totalToolCalls || 0;
+        root.museStatsActiveDays = stats.activeDays || 0;
+        root.museStatsSpanDays = stats.spanDays || 0;
+        root.museStatsCurrentStreak = stats.currentStreak || 0;
+        root.museStatsLongestStreak = stats.longestStreak || 0;
+        root.museStatsLongestSessionMs = stats.longestSessionMs || 0;
+        root.museStatsLongestSessionMessages = stats.longestSessionMessages || 0;
+        root.museStatsPeakHour = stats.peakHour === undefined ? -1 : stats.peakHour;
+        root.museStatsFirstDate = stats.firstDate || "";
+        root.museStatsModels = stats.models || ({});
+        root.museStatsDailyTokens = stats.dailySeries || [];
+        root.museStatsTopWorkspaces = stats.topWorkspaces || [];
     }
 
     function refresh() {
+        if (!root.providerDefaultsReady || root.providerDefaultsInitializing)
+            return;
         if (root.enabledTabs.length === 0)
             return;
 
@@ -1490,16 +2181,29 @@ PlasmoidItem {
 
         // The active tab plus every pinned service: those are the only providers
         // whose data is on screen, so those are the only ones worth fetching.
+        // Overview and Spend are the exception — they total every provider, so
+        // an unpinned setup would otherwise leave them refreshing nothing.
         var ids = [];
         var active = root.enabledTabs[root.activeTab] || "";
-        if (active !== "")
+        if (active !== "" && !FeatureTabs.isFeatureTab(active))
             ids.push(active);
+        else if (active === "overview" || active === "spend") {
+            for (var p = 0; p < root.providers.length; p++) {
+                var id = root.providers[p].id;
+                if (root.enabledTabs.indexOf(id) >= 0 && ids.indexOf(id) < 0)
+                    ids.push(id);
+            }
+        }
 
         var pins = root.pinnedTabs;
         for (var i = 0; i < pins.length; i++) {
             if (ids.indexOf(pins[i]) < 0)
                 ids.push(pins[i]);
         }
+        // The panel shows a provider even while a feature tab is open; fetch
+        // it too, or the panel stays blank.
+        if (root.panelTab !== "" && ids.indexOf(root.panelTab) < 0)
+            ids.push(root.panelTab);
         if (ids.length === 0)
             return;
 
@@ -1508,104 +2212,113 @@ PlasmoidItem {
         usageSource.connectSource(cmd);
     }
 
+    function refreshPricing() {
+        if (root.pricingLoading)
+            return;
+        root.pricingLoading = true;
+        var cmd = root.pythonEnv() + root.scriptPath("get-ai-usage") + " --refresh-pricing";
+        pricingSource.disconnectSource(cmd);
+        pricingSource.connectSource(cmd);
+    }
+
     Plasmoid.backgroundHints: root.backgroundHints
-    toolTipMainText: "AI API Usage"
+    toolTipMainText: i18n("AI API Usage")
     toolTipSubText: {
         var lines = [];
         var tab = root.enabledTabs[root.activeTab];
         if (tab === "claude") {
-            var fCountdown = root.sessionCountdown === "resetting..." ? " · resetting..." : (root.sessionCountdown ? " (" + root.sessionCountdown + ")" : "");
-            var sCountdown = root.weeklyCountdown === "resetting..." ? " · resetting..." : (root.weeklyCountdown ? " (" + root.weeklyCountdown + ")" : "");
+            var fCountdown = root.sessionCountdown === "resetting..." ? " · " + i18n("resetting...") : (root.sessionCountdown ? " (" + root.sessionCountdown + ")" : "");
+            var sCountdown = root.weeklyCountdown === "resetting..." ? " · " + i18n("resetting...") : (root.weeklyCountdown ? " (" + root.weeklyCountdown + ")" : "");
             if (root.sessionAvailable) {
-                lines.push("Claude 5H: " + Math.round(root.sessionPct) + "%" + fCountdown);
+                lines.push(i18n("Claude 5H: %1%", Math.round(root.sessionPct)) + fCountdown);
                 if (root.sessionTokenLimit > 0)
-                    lines.push("  " + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) + " tokens");
+                    lines.push("  " + i18n("%1 / %2 tokens", root.formatTokens(root.sessionTokensUsed), root.formatTokens(root.sessionTokenLimit)));
             }
 
             if (root.weeklyAvailable)
-                lines.push("Claude 7D: " + Math.round(root.weeklyPct) + "%" + sCountdown);
+                lines.push(i18n("Claude 7D: %1%", Math.round(root.weeklyPct)) + sCountdown);
             if (root.claudeExtraTokens > 0)
-                lines.push("Extra budget: " + root.formatTokens(root.claudeExtraTokens) + " tokens left");
+                lines.push(i18n("Extra budget: %1 tokens left", root.formatTokens(root.claudeExtraTokens)));
 
             if (root.claudeExtraUsageEnabled && root.claudeExtraUsageLimit > 0)
-                lines.push("Extra usage: " + root.claudeExtraUsageUsed.toFixed(2) + " / " + root.claudeExtraUsageLimit.toFixed(2) + " " + root.claudeExtraUsageCurrency);
+                lines.push(i18n("Extra usage: %1 / %2 %3", root.claudeExtraUsageUsed.toFixed(2), root.claudeExtraUsageLimit.toFixed(2), root.claudeExtraUsageCurrency));
 
             if (root.claudeTotalCostUSD > 0)
-                lines.push("API Cost (30d): $" + root.claudeTotalCostUSD.toFixed(2));
+                lines.push(i18n("API Cost (30d): $%1", root.claudeTotalCostUSD.toFixed(2)));
         } else if (tab === "antigravity") {
-            lines.push("Gemini: " + Math.round(root.antigravityPct) + "%");
+            lines.push(i18n("Gemini: %1%", Math.round(root.antigravityPct)));
             if (root.antigravityPlanType)
-                lines.push("Plan: " + root.antigravityPlanType);
+                lines.push(i18n("Plan: %1", root.antigravityPlanType));
 
             if (root.antigravityPromptCreditsMonthly > 0)
-                lines.push("Credits: " + root.antigravityPromptCreditsAvailable + " / " + root.antigravityPromptCreditsMonthly);
+                lines.push(i18n("Credits: %1 / %2", root.antigravityPromptCreditsAvailable, root.antigravityPromptCreditsMonthly));
 
             if (root.antigravityResetTime)
-                lines.push("Resets: " + root.antigravityResetTime);
+                lines.push(i18n("Resets: %1", root.antigravityResetTime));
         } else if (tab === "openai") {
             if (root.openaiHasApiKey)
-                lines.push("API usage: configured");
+                lines.push(i18n("API usage: configured"));
 
             if (root.openaiTotalCostUSD > 0)
-                lines.push("API cost (30d): $" + root.openaiTotalCostUSD.toFixed(2));
+                lines.push(i18n("API cost (30d): $%1", root.openaiTotalCostUSD.toFixed(2)));
 
             if (root.openaiCodexLoggedIn)
-                lines.push("Codex: signed in" + (root.openaiEmail ? " as " + root.openaiEmail : ""));
+                lines.push((root.openaiEmail ? i18n("Codex: signed in as %1", root.openaiEmail) : i18n("Codex: signed in")));
 
             if (root.codexSessionAvailable)
-                lines.push("Codex 5H left: " + Math.round(100 - root.codexSessionPct) + "%" + (root.codexSessionCountdown ? " (resets in " + root.codexSessionCountdown + ")" : ""));
+                lines.push(i18n("Codex 5H left: %1%", Math.round(100 - root.codexSessionPct)) + (root.codexSessionCountdown ? " (" + i18n("resets in %1", root.codexSessionCountdown) + ")" : ""));
 
             if (root.codexWeeklyAvailable)
-                lines.push("Codex weekly left: " + Math.round(100 - root.codexWeeklyPct) + "%" + (root.codexWeeklyCountdown ? " (resets in " + root.codexWeeklyCountdown + ")" : ""));
+                lines.push(i18n("Codex weekly left: %1%", Math.round(100 - root.codexWeeklyPct)) + (root.codexWeeklyCountdown ? " (" + i18n("resets in %1", root.codexWeeklyCountdown) + ")" : ""));
             if (root.openaiPlanType)
-                lines.push("Plan: " + root.openaiPlanType);
+                lines.push(i18n("Plan: %1", root.openaiPlanType));
 
             if (root.openaiCodexLoggedIn && !root.openaiHasApiKey)
-                lines.push("API usage needs an OpenAI API key");
+                lines.push(i18n("API usage needs an OpenAI API key"));
         } else if (tab === "kiro") {
             if (root.kiroPlanType)
-                lines.push("Plan: " + root.kiroPlanType.toUpperCase());
+                lines.push(i18n("Plan: %1", root.kiroPlanType.toUpperCase()));
 
             if (root.kiroUsageLimit > 0)
-                lines.push("Credits: " + root.kiroCurrentUsage.toFixed(2) + " / " + root.kiroUsageLimit.toFixed(0));
+                lines.push(i18n("Credits: %1 / %2", root.kiroCurrentUsage.toFixed(2), root.kiroUsageLimit.toFixed(0)));
 
             if (root.kiroResetTime)
-                lines.push("Resets: " + root.kiroResetTime + (root.kiroCountdown ? " (" + root.kiroCountdown + ")" : ""));
+                lines.push(i18n("Resets: %1", root.kiroResetTime) + (root.kiroCountdown ? " (" + root.kiroCountdown + ")" : ""));
 
             if (root.kiroCurrentOverages > 0 || root.kiroOverageCharges > 0)
-                lines.push("Overage: " + root.kiroCurrencySymbol + root.kiroOverageCharges.toFixed(2));
+                lines.push(i18n("Overage: %1", root.kiroCurrencySymbol + root.kiroOverageCharges.toFixed(2)));
         } else if (tab === "mistral") {
             if (root.mistralKeyValid)
-                lines.push("API key: configured");
+                lines.push(i18n("API key: configured"));
 
             if (root.mistralAvailableModels.length > 0)
-                lines.push(root.mistralAvailableModels.length + " models available");
+                lines.push(i18np("%1 model available", "%1 models available", root.mistralAvailableModels.length));
 
             if (root.mistralError)
-                lines.push("⚠ " + root.mistralError);
+                lines.push("⚠ " + root.errorText(root.mistralError));
         } else if (tab === "openrouter") {
             if (root.openrouterLabel)
                 lines.push(root.openrouterLabel);
 
             if (root.openrouterUsageUSD > 0)
-                lines.push("Spent: $" + root.openrouterUsageUSD.toFixed(4));
+                lines.push(i18n("Spent: $%1", root.openrouterUsageUSD.toFixed(4)));
 
             if (root.openrouterLimitUSD !== null)
-                lines.push("Limit: $" + root.openrouterLimitUSD.toFixed(2));
+                lines.push(i18n("Limit: $%1", root.openrouterLimitUSD.toFixed(2)));
 
             if (root.openrouterIsFreeTier)
-                lines.push("Free tier");
+                lines.push(i18n("Free tier"));
         } else if (tab === "grok") {
-            lines.push(root.grokHasBilling ? ("Grok credits: " + Math.round(root.grokPct) + "% used") : "Grok CLI connected; billing quota unavailable");
+            lines.push(root.grokHasBilling ? (i18n("Grok credits: %1% used", Math.round(root.grokPct))) : i18n("Grok CLI connected; billing quota unavailable"));
             if (root.grokTeamName || root.grokEmail)
                 lines.push(root.grokTeamName || root.grokEmail);
 
             if (root.grokBillingPeriodEnd)
-                lines.push("Resets: " + root.grokBillingPeriodEnd);
+                lines.push(i18n("Resets: %1", root.grokBillingPeriodEnd));
 
-            lines.push(root.grokSessionCount + " local CLI sessions");
+            lines.push(i18np("%1 local CLI session", "%1 local CLI sessions", root.grokSessionCount));
             if (root.grokError)
-                lines.push("⚠ " + root.grokError);
+                lines.push("⚠ " + root.errorText(root.grokError));
         } else if (tab === "zai") {
             if (root.zaiPlanAvailable) {
                 if (root.zaiSessionAvailable) {
@@ -1624,9 +2337,9 @@ PlasmoidItem {
                     lines.push(root.formatTokens(root.zaiTokenUsed) + " / " + root.formatTokens(root.zaiTokenLimit) + " tokens");
             }
 
-            lines.push("Tools: " + Math.round(root.zaiToolsPct) + "%" + (root.zaiToolsCountdown ? " (" + root.zaiToolsCountdown + ")" : ""));
+            lines.push(i18n("Tools: %1%", Math.round(root.zaiToolsPct)) + (root.zaiToolsCountdown ? " (" + root.zaiToolsCountdown + ")" : ""));
             if (root.zaiToolsRemaining > 0)
-                lines.push("Tools left: " + root.zaiToolsRemaining);
+                lines.push(i18n("Tools left: %1", root.zaiToolsRemaining));
 
             if (root.zaiStartPlanBalances.length > 0) {
                 lines.push((root.zaiStartPlanName !== "" ? root.zaiStartPlanName : "Start Plan") + ":");
@@ -1635,39 +2348,103 @@ PlasmoidItem {
             }
 
             if (root.zaiLevel)
-                lines.push("Level: " + root.zaiLevel);
+                lines.push(i18n("Level: %1", root.zaiLevel));
 
             if (root.zaiModels.length > 0)
-                lines.push(root.zaiModels.length + " models available");
+                lines.push(i18np("%1 model available", "%1 models available", root.zaiModels.length));
 
             if (root.zaiError)
-                lines.push("⚠ " + root.zaiError);
+                lines.push("⚠ " + root.errorText(root.zaiError));
         } else if (tab === "copilot") {
-            lines.push("Copilot: " + Math.round(root.copilotPct) + "%" + (root.copilotCountdown ? " (" + root.copilotCountdown + ")" : ""));
+            lines.push(i18n("Copilot: %1%", Math.round(root.copilotPct)) + (root.copilotCountdown ? " (" + root.copilotCountdown + ")" : ""));
             if (root.copilotQuota > 0)
-                lines.push(root.copilotUsed + " / " + root.copilotQuota + " requests");
+                lines.push(i18n("%1 / %2 requests", root.copilotUsed, root.copilotQuota));
 
             if (root.copilotUsername)
                 lines.push(root.copilotUsername);
 
             if (root.copilotError)
-                lines.push("⚠ " + root.copilotError);
+                lines.push("⚠ " + root.errorText(root.copilotError));
         } else if (tab === "deepseek") {
             if (root.deepseekKeyValid) {
-                lines.push("Balance: " + root.formatMoney(root.deepseekPrimaryTotal, root.deepseekPrimaryCurrency));
-                lines.push(root.deepseekIsAvailable ? "Available for API calls" : "Balance unavailable");
+                lines.push(i18n("Balance: %1", root.formatMoney(root.deepseekPrimaryTotal, root.deepseekPrimaryCurrency)));
+                lines.push(root.deepseekIsAvailable ? i18n("Available for API calls") : i18n("Balance unavailable"));
             }
             if (root.deepseekError)
-                lines.push("⚠ " + root.deepseekError);
+                lines.push("⚠ " + root.errorText(root.deepseekError));
+        } else if (tab === "kimi") {
+            for (var k = 0; k < root.kimiPlanWindows.length; k++)
+                lines.push(root.kimiWindowLabel(root.kimiPlanWindows[k]) + ": " + Math.round(root.kimiPlanWindows[k].pct) + "%");
+
+            if (root.kimiPlanExhausted)
+                lines.push(i18n("Kimi Code: %1", root.kimiPlanMessageText()));
+
+            if (root.kimiKeyValid)
+                lines.push(i18n("Moonshot balance: %1", root.formatMoney(root.kimiAvailableBalance, "USD")));
+
+            if (root.kimiError)
+                lines.push("⚠ " + root.errorText(root.kimiError));
+        } else if (tab === "cursor") {
+            if (root.cursorPlanName)
+                lines.push(i18n("Plan: %1", root.cursorPlanName));
+
+            if (root.cursorAvailable)
+                lines.push(i18n("Included usage: %1%", Math.round(root.cursorTotalPct)));
+
+            if (root.cursorHasSplit)
+                lines.push(i18n("Auto: %1%", Math.round(root.cursorAutoPct)) + " · " + i18n("API: %1%", Math.round(root.cursorApiPct)));
+
+            if (root.cursorResetTime)
+                lines.push(i18n("Resets: %1", root.cursorResetTime) + (root.cursorCountdown ? " (" + root.cursorCountdown + ")" : ""));
+
+            if (root.cursorError)
+                lines.push("⚠ " + root.errorText(root.cursorError));
+        } else if (tab === "cline") {
+            if (root.clineStats.available === true) {
+                lines.push(i18n("Tokens: %1 (all time)", root.formatTokens(root.clineStats.totalTokens || 0)));
+                lines.push(i18n("Sessions: %1", Math.round(root.clineStats.totalSessions || 0)));
+                if ((root.clineStats.totalCostUSD || 0) > 0)
+                    lines.push(i18n("Spend: %1", root.formatMoney(root.clineStats.totalCostUSD, "USD")));
+            }
+
+            if (root.clineError)
+                lines.push("⚠ " + root.errorText(root.clineError));
+        } else if (tab === "muse") {
+            lines.push("Muse" + (root.museModel ? " · " + root.museModel : ""));
+            if (root.museCurrentAvailable)
+                lines.push(i18n("Current: %1%", Math.round(root.museCurrentPct)) + (root.museCurrentCountdown ? " (" + root.museCurrentCountdown + ")" : ""));
+            if (root.museWeeklyAvailable)
+                lines.push(i18n("Weekly: %1%", Math.round(root.museWeeklyPct)));
+            if (root.museTotalTokens > 0)
+                lines.push(i18n("%1 tokens", root.formatTokens(root.museTotalTokens)) + " · " + i18np("%1 session", "%1 sessions", root.museStatsTotalSessions));
+            if (root.museCostUSD > 0)
+                lines.push(i18n("Spend (est.): %1", root.formatMoney(root.museCostUSD, root.museCurrency)));
+            if (root.museError)
+                lines.push("⚠ " + root.errorText(root.museError));
         }
         if (root.errorMsg !== "")
-            lines.push("⚠ " + root.errorMsg);
+            lines.push("⚠ " + root.errorText(root.errorMsg));
         else if (root.lastUpdate !== "")
-            lines.push("Updated " + root.lastUpdate + (root.stale ? " (stale)" : ""));
+            lines.push((root.stale ? i18n("Updated %1 (stale)", root.lastUpdate) : i18n("Updated %1", root.lastUpdate)));
         return lines.join("\n");
     }
     onChartWindowChanged: {
         root.chartTimeOffset = 0;
+    }
+    // Plasma fills in the stored settings after startup, one key at a time, so
+    // the tab is re-resolved as they arrive. While the popup is open, enabling
+    // or disabling a provider shifts the indices; stay on the tab in view.
+    readonly property string savedTab: Plasmoid.configuration.lastTab || ""
+    onSavedTabChanged: {
+        if (!root.expanded)
+            root.restoreTab();
+    }
+    onEnabledTabsChanged: {
+        var idx = root.expanded ? root.enabledTabs.indexOf(root.savedTab) : -1;
+        if (idx >= 0)
+            root.activeTab = idx;
+        else
+            root.restoreTab();
     }
     onActiveTabChanged: {
         // Map the remembered granularity (5h/24h/7d) onto the new tab so the
@@ -1679,6 +2456,12 @@ PlasmoidItem {
             root.chartWindow = win;
             Plasmoid.configuration.chartWindow = win;
         }
+        if (tab !== "" && !FeatureTabs.isFeatureTab(tab))
+            root.lastProviderId = tab;
+        // Only a tab picked in the open popup is remembered; the startup
+        // restore runs before the stored value has loaded.
+        if (root.expanded && tab !== "" && root.savedTab !== tab)
+            Plasmoid.configuration.lastTab = tab;
         root.chartTimeOffset = 0;
         // A rate limit belongs to the provider that hit it; don't let it keep
         // the tab you just switched to empty.
@@ -1697,14 +2480,12 @@ PlasmoidItem {
             }
         }
     }
+    Component.onDestruction: root.flushHistoryConfig()
     Component.onCompleted: {
         root.loadUsageHistory();
-        // Honor the first pinned service on startup by selecting its tab.
-        if (root.pinnedTabs.length > 0) {
-            var idx = root.enabledTabs.indexOf(root.pinnedTabs[0]);
-            if (idx >= 0)
-                root.activeTab = idx;
-        }
+        root.normalizePanelRotation();
+        root.restoreTab();
+        root.initializeProviderDefaults();
     }
 
     Plasma5Support.DataSource {
@@ -1726,7 +2507,9 @@ PlasmoidItem {
         onNewData: function (src, data) {
             disconnectSource(src);
             // The operation is encoded as the last word of the command.
-            var op = src.indexOf(" autosave") >= 0 ? "autosave" : src.indexOf(" autoload") >= 0 ? "autoload" : src.indexOf(" export") >= 0 ? "export" : "import";
+            // `autosave` and `seed` differ only in the precedence history-io
+            // merges them with, and are answered the same way here.
+            var op = src.indexOf(" autosave") >= 0 || src.indexOf(" seed") >= 0 ? "save" : src.indexOf(" autoload") >= 0 ? "autoload" : src.indexOf(" export") >= 0 ? "export" : "import";
             var out = (data["stdout"] || "").trim();
             try {
                 var res = JSON.parse(out);
@@ -1734,46 +2517,61 @@ PlasmoidItem {
                     // autosave/autoload are background ops — stay silent on their errors
                     if (op === "import" || op === "export")
                         root.historyIOMsg = "⚠ " + res.error;
+                    // A save that could not merge wrote nothing, so its batch is
+                    // still this widget's to retry.
+                    if (op === "save")
+                        root.failHistorySave();
+                    // A failed autoload still has to release the mirror, or the
+                    // widget would never write its history to disk again.
+                    if (op === "autoload")
+                        root.releaseHistoryMirror();
 
                     return;
                 }
-                if (op === "autosave")
+                if (op === "save") {
+                    // The merged file comes back, so the other frontend's points
+                    // arrive without a separate read. The degraded write answers
+                    // {"ok":true} with no series, leaving nothing to adopt.
+                    root.finishHistorySave(res.data);
                     return;
-                // silent mirror, nothing to do
+                }
                 if (res.path) {
-                    root.historyIOMsg = "Exported to " + res.path;
+                    root.historyIOMsg = i18n("Exported to %1", res.path);
+                    return;
+                }
+                if (op === "autoload") {
+                    // The file wins for everything it knows; the config's own
+                    // points survive either way and go back through the seed
+                    // lane. A no-op on a fresh install, where there is no file.
+                    UsageHistory.adopt(root.historyStore, res.data);
+                    root.syncUsageHistory();
+                    root.releaseHistoryMirror();
                     return;
                 }
                 if (res.data) {
-                    // array of {t,s,w} (or legacy {t,v}); normalize + persist
-                    var norm = UsageHistory.normalize(res.data, root.historyLimit);
-                    // Merge autoload data with any points already recorded since startup
-                    // (poll timer fires immediately and may beat the async shell).
-                    if (op === "autoload" && root.usageHistory.length > 0) {
-                        var existing = root.usageHistory;
-                        var merged = norm.slice();
-                        var lastNormT = norm.length > 0 ? norm[norm.length - 1].t : 0;
-                        for (var j = 0; j < existing.length; j++) {
-                            if (existing[j].t > lastNormT)
-                                merged.push(existing[j]);
-                        }
-                        if (merged.length > root.historyLimit)
-                            merged = merged.slice(merged.length - root.historyLimit);
-
-                        root.usageHistory = merged;
-                        Plasmoid.configuration.usageHistory = JSON.stringify(merged);
-                        root.autosaveHistory(JSON.stringify(merged));
-                        return;
-                    }
-                    root.usageHistory = norm;
-                    Plasmoid.configuration.usageHistory = JSON.stringify(norm);
+                    // array of {t,s,w} (or legacy {t,v})
+                    var imported = UsageHistory.normalize(res.data, root.historyLimit);
+                    // A snapshot, not a reading: restore() puts it under the
+                    // running series and into the seed lane, so the file keeps
+                    // its own values for anything it already has.
+                    UsageHistory.restore(root.historyStore, imported);
+                    root.syncUsageHistory();
+                    root.saveHistory();
+                    // An explicit Import is worth persisting straight away.
+                    root.flushHistoryConfig();
                     // Only the manual Import button announces a count; autoload is silent.
                     if (op === "import")
-                        root.historyIOMsg = "Imported " + norm.length + " points";
+                        root.historyIOMsg = i18n("Imported %1 points", imported.length);
                 }
             } catch (e) {
+                if (op === "save")
+                    root.failHistorySave();
+
+                if (op === "autoload")
+                    root.releaseHistoryMirror();
+
                 if (op === "import" || op === "export")
-                    root.historyIOMsg = "⚠ history I/O failed";
+                    root.historyIOMsg = i18n("⚠ history I/O failed");
             }
         }
     }
@@ -1781,7 +2579,7 @@ PlasmoidItem {
     ColorDialog {
         id: colorDialog
 
-        title: colorTarget === "popup" ? "Choose Popup Background Color" : "Choose Card Background Color"
+        title: colorTarget === "popup" ? i18n("Choose Popup Background Color") : i18n("Choose Card Background Color")
         onAccepted: {
             var hex = selectedColor.toString().substring(0, 7);
             if (hex.charAt(0) !== '#')
@@ -1808,6 +2606,65 @@ PlasmoidItem {
         onNewData: function (src, data) {
             disconnectSource(src);
             root.applySnapshot((data["stdout"] || "").trim());
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: providerDefaultsSource
+
+        engine: "executable"
+        connectedSources: []
+        onNewData: function (src, data) {
+            disconnectSource(src);
+            // Latch only on a real answer: a missing python3 or a broken
+            // backend keeps the shipped defaults and retries next start.
+            try {
+                var result = JSON.parse((data["stdout"] || "").trim());
+                if (result.ok === true && Array.isArray(result.data)) {
+                    root.applyDetectedProviders(result.data);
+                    Plasmoid.configuration.providerDefaultsApplied = true;
+                }
+            } catch (e) {}
+            root.providerDefaultsInitializing = false;
+            root.providerDefaultsReady = true;
+            root.refresh();
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: providerRedetectSource
+
+        engine: "executable"
+        connectedSources: []
+        onNewData: function (src, data) {
+            disconnectSource(src);
+            var result = null;
+            try {
+                result = JSON.parse((data["stdout"] || "").trim());
+            } catch (e) {}
+            root.applyProviderRedetect(result);
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: pricingSource
+
+        engine: "executable"
+        connectedSources: []
+        onNewData: function (src, data) {
+            disconnectSource(src);
+            root.pricingLoading = false;
+            var stdout = (data && data.stdout) ? data.stdout.trim() : "";
+            try {
+                var result = JSON.parse(stdout);
+                root.pricingStatus = result.status || (result.ok === true ? "refreshed" : "no-cache");
+                root.pricingError = result.error || "";
+                if (result.ok === true)
+                    root.refresh();
+            } catch (e) {
+                root.pricingStatus = "no-cache";
+                root.pricingError = i18n("Could not refresh pricing.");
+            }
         }
     }
 
@@ -1881,6 +2738,17 @@ PlasmoidItem {
             }
         }
 
+        Timer {
+            id: panelRotationTimer
+
+            interval: root.panelRotationIntervalSec * 1000
+            running: root.panelRotationEnabled && !root.expanded
+            repeat: true
+            onIntervalChanged: if (running)
+                restart()
+            onTriggered: root.rotatePanelProvider()
+        }
+
         RowLayout {
             id: compactRow
 
@@ -1889,8 +2757,10 @@ PlasmoidItem {
 
             Rectangle {
                 visible: root.errorMsg !== ""
-                width: 6
-                height: 6
+                implicitWidth: 6
+                implicitHeight: 6
+                Layout.preferredWidth: 6
+                Layout.preferredHeight: 6
                 radius: 3
                 color: root.dangerColor
                 Layout.alignment: Qt.AlignVCenter
@@ -1921,13 +2791,15 @@ PlasmoidItem {
                 windowTag: "5H"
                 stale: root.stale && root.panelShows("claude")
                 visible: root.panelShows("claude") && root.sessionAvailable
-                tooltipText: "Claude 5-hour: " + Math.round(root.sessionPct) + "%" + (root.sessionTokenLimit > 0 ? "\n" + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) : "")
+                tooltipText: i18n("Claude 5-hour: %1%", Math.round(root.sessionPct)) + (root.sessionTokenLimit > 0 ? "\n" + root.formatTokens(root.sessionTokensUsed) + " / " + root.formatTokens(root.sessionTokenLimit) : "")
             }
 
             Rectangle {
                 visible: root.panelShows("claude") && root.sessionAvailable && root.weeklyAvailable
-                width: 1
-                height: 14
+                implicitWidth: 1
+                implicitHeight: 14
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
                 Layout.alignment: Qt.AlignVCenter
             }
@@ -1937,11 +2809,11 @@ PlasmoidItem {
                 iconColor: root.claudeOrange
                 iconSource: Qt.resolvedUrl("../icons/claude-color.svg")
                 iconTint: root.claudeOrange
-                iconText: "7D"
+                iconText: i18n("7D")
                 windowTag: "7D"
                 stale: root.stale && root.panelShows("claude")
                 visible: root.panelShows("claude") && root.weeklyAvailable
-                tooltipText: "Claude 7-day: " + Math.round(root.weeklyPct) + "%" + (root.weeklyTokenLimit > 0 ? "\n" + root.formatTokens(root.weeklyTokensUsed) + " / " + root.formatTokens(root.weeklyTokenLimit) : "")
+                tooltipText: i18n("Claude 7-day: %1%", Math.round(root.weeklyPct)) + (root.weeklyTokenLimit > 0 ? "\n" + root.formatTokens(root.weeklyTokensUsed) + " / " + root.formatTokens(root.weeklyTokenLimit) : "")
             }
 
             PanelSlot {
@@ -1953,13 +2825,15 @@ PlasmoidItem {
                 separatorBefore: root.panelHasPillBefore("antigravity")
                 stale: root.stale && root.panelShows("antigravity")
                 visible: root.panelShows("antigravity")
-                tooltipText: "Gemini (Google) quota: " + Math.round(root.antigravityGooglePct) + "%" + (root.antigravityPlanType ? "\nPlan: " + root.antigravityPlanType : "") + (root.antigravityEmail ? "\n" + root.antigravityEmail : "")
+                tooltipText: i18n("Gemini (Google) quota: %1%", Math.round(root.antigravityGooglePct)) + (root.antigravityPlanType ? "\n" + i18n("Plan: %1", root.antigravityPlanType) : "") + (root.antigravityEmail ? "\n" + root.antigravityEmail : "")
             }
 
             Rectangle {
                 visible: root.panelShows("antigravity")
-                width: 1
-                height: 14
+                implicitWidth: 1
+                implicitHeight: 14
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
                 Layout.alignment: Qt.AlignVCenter
             }
@@ -1973,7 +2847,7 @@ PlasmoidItem {
                 windowTag: "30D"
                 stale: root.stale && root.panelShows("antigravity")
                 visible: root.panelShows("antigravity")
-                tooltipText: "External models quota: " + Math.round(root.antigravityExternalPct) + "%" + (root.antigravityPlanType ? "\nPlan: " + root.antigravityPlanType : "") + (root.antigravityEmail ? "\n" + root.antigravityEmail : "")
+                tooltipText: i18n("External models quota: %1%", Math.round(root.antigravityExternalPct)) + (root.antigravityPlanType ? "\n" + i18n("Plan: %1", root.antigravityPlanType) : "") + (root.antigravityEmail ? "\n" + root.antigravityEmail : "")
             }
 
             PanelSlot {
@@ -1988,13 +2862,15 @@ PlasmoidItem {
                 visible: root.panelShows("openai") && (root.codexSessionAvailable || !root.codexUsageAvailable)
                 showCost: !root.codexUsageAvailable
                 costText: root.openaiTotalCostUSD > 0 ? "$" + root.openaiTotalCostUSD.toFixed(2) : (root.openaiHasApiKey ? "API" : (root.openaiCodexLoggedIn ? "Codex" : "—"))
-                tooltipText: "OpenAI" + (root.codexSessionAvailable ? "\nCodex 5h: " + Math.round(100 - root.codexSessionPct) + "% left" : "") + (root.codexWeeklyAvailable ? "\nCodex weekly: " + Math.round(100 - root.codexWeeklyPct) + "% left" : "") + (root.openaiHasApiKey ? "\nAPI usage configured\nCost (30d): $" + root.openaiTotalCostUSD.toFixed(2) + "\nIn: " + root.formatTokens(root.openaiTotalInputTokens) + "  Out: " + root.formatTokens(root.openaiTotalOutputTokens) : "\nAPI usage needs an OpenAI API key") + (root.openaiCodexLoggedIn ? "\nCodex signed in" + (root.openaiEmail ? ": " + root.openaiEmail : "") : "")
+                tooltipText: "OpenAI" + (root.codexSessionAvailable ? "\n" + i18n("Codex 5h: %1% left", Math.round(100 - root.codexSessionPct)) : "") + (root.codexWeeklyAvailable ? "\n" + i18n("Codex weekly: %1% left", Math.round(100 - root.codexWeeklyPct)) : "") + (root.openaiHasApiKey ? "\n" + i18n("API usage configured") + "\n" + i18n("Cost (30d): $%1", root.openaiTotalCostUSD.toFixed(2)) + "\n" + i18n("In: %1", root.formatTokens(root.openaiTotalInputTokens)) + "  " + i18n("Out: %1", root.formatTokens(root.openaiTotalOutputTokens)) : i18n("\nAPI usage needs an OpenAI API key")) + (root.openaiCodexLoggedIn ? i18n("\nCodex signed in") + (root.openaiEmail ? ": " + root.openaiEmail : "") : "")
             }
 
             Rectangle {
                 visible: root.panelShows("openai") && root.codexSessionAvailable && root.codexWeeklyAvailable
-                width: 1
-                height: 14
+                implicitWidth: 1
+                implicitHeight: 14
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 14
                 color: Qt.rgba(1, 1, 1, 0.16)
                 Layout.alignment: Qt.AlignVCenter
             }
@@ -2004,12 +2880,12 @@ PlasmoidItem {
                 iconColor: root.openaiGreen
                 iconSource: Qt.resolvedUrl("../icons/openai.svg")
                 iconTint: root.openaiGreen
-                iconText: "7D"
+                iconText: i18n("7D")
                 windowTag: "7D"
                 stale: root.stale && root.panelShows("openai")
                 visible: root.panelShows("openai") && root.codexWeeklyAvailable
                 showCost: false
-                tooltipText: "OpenAI Codex weekly: " + Math.round(100 - root.codexWeeklyPct) + "% left"
+                tooltipText: i18n("OpenAI Codex weekly: %1% left", Math.round(100 - root.codexWeeklyPct))
             }
 
             PanelSlot {
@@ -2023,7 +2899,7 @@ PlasmoidItem {
                 visible: root.panelShows("kiro")
                 showCost: !root.kiroUsageAvailable
                 costText: root.kiroUsageAvailable ? "" : "—"
-                tooltipText: "Kiro" + (root.kiroPlanType ? "\nPlan: " + root.kiroPlanType.toUpperCase() : "") + (root.kiroUsageLimit > 0 ? "\nCredits: " + root.kiroCurrentUsage.toFixed(2) + " / " + root.kiroUsageLimit.toFixed(0) : "") + (root.kiroResetTime ? "\nResets: " + root.kiroResetTime : "")
+                tooltipText: "Kiro" + (root.kiroPlanType ? "\n" + i18n("Plan: %1", root.kiroPlanType.toUpperCase()) : "") + (root.kiroUsageLimit > 0 ? "\n" + i18n("Credits: %1 / %2", root.kiroCurrentUsage.toFixed(2), root.kiroUsageLimit.toFixed(0)) : "") + (root.kiroResetTime ? "\n" + i18n("Resets: %1", root.kiroResetTime) : "")
             }
 
             PanelSlot {
@@ -2035,8 +2911,8 @@ PlasmoidItem {
                 stale: root.stale && root.panelShows("mistral")
                 visible: root.panelShows("mistral")
                 showCost: true
-                costText: root.mistralVibeTotalCost > 0 ? "$" + root.mistralVibeTotalCost.toFixed(2) : (root.mistralKeyValid ? "✓ key" : "—")
-                tooltipText: "Mistral AI" + (root.mistralKeyValid ? "\nAPI key configured" : "\nNo key set") + (root.mistralVibeTotalCost > 0 ? "\nSpend (vibe): $" + root.mistralVibeTotalCost.toFixed(4) : "") + (root.mistralAvailableModels.length > 0 ? "\n" + root.mistralAvailableModels.length + " models" : "")
+                costText: root.mistralVibeTotalCost > 0 ? "$" + root.mistralVibeTotalCost.toFixed(2) : (root.mistralKeyValid ? i18n("✓ key") : "—")
+                tooltipText: "Mistral AI" + (root.mistralKeyValid ? i18n("\nAPI key configured") : i18n("\nNo key set")) + (root.mistralVibeTotalCost > 0 ? "\n" + i18n("Spend (vibe): $%1", root.mistralVibeTotalCost.toFixed(4)) : "") + (root.mistralAvailableModels.length > 0 ? "\n" + i18np("%1 model", "%1 models", root.mistralAvailableModels.length) : "")
             }
 
             PanelSlot {
@@ -2053,6 +2929,51 @@ PlasmoidItem {
             }
 
             PanelSlot {
+                pct: root.ollamaPct
+                iconColor: "#f0f0f0"
+                iconSource: Qt.resolvedUrl("../icons/ollama.svg")
+                iconText: "OL"
+                stale: root.stale && root.panelShows("ollama")
+                visible: root.panelShows("ollama") && !root.showSettings
+                showCost: root.ollamaWindows.length === 0
+                costText: "—"
+                tooltipText: "Ollama Cloud" + (root.ollamaWindows.length > 0 ? "\n" + root.ollamaWindows[0].label + ": " + Math.round(root.ollamaPct) + "%" : "\n" + root.ollamaError)
+            }
+
+            Rectangle {
+                visible: root.panelShows("ollama") && root.ollamaWindows.length > 0 && root.ollamaWindows[0].key === "ollama_session" && root.ollamaWeeklyWindow !== null
+                implicitWidth: 1
+                implicitHeight: 14
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 14
+                color: Qt.rgba(1, 1, 1, 0.16)
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            PanelSlot {
+                pct: root.ollamaWeeklyWindow ? root.ollamaWeeklyWindow.pct : 0
+                iconColor: "#f0f0f0"
+                iconTint: root.weeklyColor
+                iconSource: Qt.resolvedUrl("../icons/ollama.svg")
+                iconText: i18n("7D")
+                stale: root.stale && root.panelShows("ollama")
+                visible: root.panelShows("ollama") && root.ollamaWindows.length > 0 && root.ollamaWindows[0].key === "ollama_session" && root.ollamaWeeklyWindow !== null
+                tooltipText: "Ollama Cloud\n" + (root.ollamaWeeklyWindow ? root.ollamaWeeklyWindow.label + ": " + Math.round(root.ollamaWeeklyWindow.pct) + "%" : "")
+            }
+
+            PanelSlot {
+                pct: root.selfhostedProvider.summary ? (root.selfhostedProvider.summary.pct || 0) : 0
+                iconColor: "#38bdf8"
+                iconSource: Qt.resolvedUrl("../icons/local-models.svg")
+                iconText: "LM"
+                stale: root.stale && root.panelShows("selfhosted")
+                visible: root.panelShows("selfhosted") && !root.showSettings
+                showCost: !root.selfhostedProvider.summary || !root.selfhostedProvider.summary.hasChart
+                costText: root.selfhostedProvider.summary ? root.selfhostedProvider.summary.text : "—"
+                tooltipText: i18n("Local Models") + "\n" + (root.selfhostedProvider.error || (root.selfhostedProvider.summary ? root.selfhostedProvider.summary.text + " · " + root.selfhostedProvider.summary.detail : i18n("Checking…")))
+            }
+
+            PanelSlot {
                 pct: root.grokPct
                 iconColor: root.grokWhite
                 iconSource: Qt.resolvedUrl("../icons/grok.svg")
@@ -2063,7 +2984,7 @@ PlasmoidItem {
                 visible: root.panelShows("grok") && !root.showSettings
                 showCost: !root.grokHasBilling
                 costText: root.grokHasBilling ? "" : "CLI"
-                tooltipText: root.grokHasBilling ? ("Grok credits: " + Math.round(root.grokPct) + "% used" + (root.grokBillingPeriodEnd ? "\nResets: " + root.grokBillingPeriodEnd : "")) : "Grok CLI connected; billing quota is not exposed"
+                tooltipText: root.grokHasBilling ? (i18n("Grok credits: %1% used", Math.round(root.grokPct)) + (root.grokBillingPeriodEnd ? "\n" + i18n("Resets: %1", root.grokBillingPeriodEnd) : "")) : i18n("Grok CLI connected; billing quota is not exposed")
             }
 
             PanelSlot {
@@ -2103,13 +3024,13 @@ PlasmoidItem {
             PanelSlot {
                 pct: root.copilotPct
                 iconColor: root.copilotPurple
-                iconSource: Qt.resolvedUrl("../icons/copilot-color.svg")
+                iconSource: Qt.resolvedUrl("../icons/githubcopilot.svg")
                 iconText: "CP"
                 windowTag: "30D"
                 separatorBefore: root.panelHasPillBefore("copilot")
                 stale: root.stale && root.panelShows("copilot")
                 visible: root.panelShows("copilot")
-                tooltipText: "Copilot: " + Math.round(root.copilotPct) + "%" + (root.copilotQuota > 0 ? "\n" + root.copilotUsed + " / " + root.copilotQuota + " requests" : "") + (root.copilotCountdown ? "\nResets: " + root.copilotCountdown : "") + (root.copilotUsername ? "\n" + root.copilotUsername : "")
+                tooltipText: i18n("Copilot: %1%", Math.round(root.copilotPct)) + (root.copilotQuota > 0 ? "\n" + i18n("%1 / %2 requests", root.copilotUsed, root.copilotQuota) : "") + (root.copilotCountdown ? "\n" + i18n("Resets: %1", root.copilotCountdown) : "") + (root.copilotUsername ? "\n" + root.copilotUsername : "")
             }
 
             PanelSlot {
@@ -2122,20 +3043,101 @@ PlasmoidItem {
                 visible: root.panelShows("deepseek")
                 showCost: true
                 costText: root.deepseekKeyValid ? root.formatMoney(root.deepseekPrimaryTotal, root.deepseekPrimaryCurrency) : "—"
-                tooltipText: "DeepSeek" + (root.deepseekKeyValid ? "\nBalance: " + root.formatMoney(root.deepseekPrimaryTotal, root.deepseekPrimaryCurrency) + "\nGranted: " + root.formatMoney(root.deepseekPrimaryGranted, root.deepseekPrimaryCurrency) + "\nTopped up: " + root.formatMoney(root.deepseekPrimaryToppedUp, root.deepseekPrimaryCurrency) : "\nNo API key set")
+                tooltipText: "DeepSeek" + (root.deepseekKeyValid ? "\n" + i18n("Balance: %1", root.formatMoney(root.deepseekPrimaryTotal, root.deepseekPrimaryCurrency)) + "\n" + i18n("Granted: %1", root.formatMoney(root.deepseekPrimaryGranted, root.deepseekPrimaryCurrency)) + "\n" + i18n("Topped up: %1", root.formatMoney(root.deepseekPrimaryToppedUp, root.deepseekPrimaryCurrency)) : i18n("\nNo API key set"))
             }
 
             PanelSlot {
-                pct: 0
+                // The Kimi Code plan is a percentage and wins the pill; the
+                // Moonshot balance is the fallback for API-key-only setups.
+                pct: root.kimiPlanAvailable ? root.kimiPlanPct : 0
                 iconColor: root.kimiBlue
                 iconSource: Qt.resolvedUrl("../icons/kimi.svg")
                 iconText: "K"
                 separatorBefore: root.panelHasPillBefore("kimi")
                 stale: root.stale && root.panelShows("kimi")
                 visible: root.panelShows("kimi")
-                showCost: true
+                showCost: !root.kimiPlanAvailable
                 costText: root.kimiKeyValid ? root.formatMoney(root.kimiAvailableBalance, "USD") : "—"
-                tooltipText: "Kimi / Moonshot" + (root.kimiKeyValid ? "\nBalance: " + root.formatMoney(root.kimiAvailableBalance, "USD") + "\nVoucher: " + root.formatMoney(root.kimiVoucherBalance, "USD") + "\nCash: " + root.formatMoney(root.kimiCashBalance, "USD") : "\nNo Moonshot API key set")
+                tooltipText: {
+                    var t = root.kimiPlanAvailable ? "Kimi Code" : "Kimi / Moonshot";
+                    for (var i = 0; i < root.kimiPlanWindows.length; i++)
+                        t += "\n" + root.kimiWindowLabel(root.kimiPlanWindows[i]) + ": " + Math.round(root.kimiPlanWindows[i].pct) + "%";
+                    if (root.kimiPlanExhausted)
+                        t += "\n" + root.kimiPlanMessageText();
+                    if (root.kimiKeyValid)
+                        t += "\n" + i18n("Balance: %1", root.formatMoney(root.kimiAvailableBalance, "USD")) + "\n" + i18n("Voucher: %1", root.formatMoney(root.kimiVoucherBalance, "USD")) + "\n" + i18n("Cash: %1", root.formatMoney(root.kimiCashBalance, "USD"));
+                    else if (!root.kimiPlanAvailable)
+                        t += i18n("\nNo Moonshot API key or Kimi Code login");
+                    return t;
+                }
+            }
+
+            PanelSlot {
+                // No quota to fill: the pill shows the last 30 days' tokens.
+                pct: 0
+                iconColor: root.clineWhite
+                iconSource: Qt.resolvedUrl("../icons/cline.svg")
+                iconText: "Cl"
+                stale: root.stale && root.panelShows("cline")
+                visible: root.panelShows("cline")
+                showCost: true
+                costText: root.clineStats.available === true ? root.formatTokens(root.clineMonthTokens) : "—"
+                tooltipText: {
+                    if (root.clineStats.available !== true)
+                        return "Cline\n" + (root.clineError || i18n("No sessions yet"));
+                    var t = "Cline";
+                    for (var i = 0; i < root.clinePeriods.length; i++) {
+                        var p = root.clinePeriods[i];
+                        t += "\n" + root.clinePeriodLabel(p) + ": " + i18n("%1 tokens", root.formatTokens(p.tokens || 0)) + " · " + i18np("%1 session", "%1 sessions", p.sessions);
+                    }
+                    return t;
+                }
+            }
+
+            PanelSlot {
+                pct: root.cursorTotalPct
+                iconColor: root.cursorWhite
+                iconSource: Qt.resolvedUrl("../icons/cursor.svg")
+                iconText: "Cu"
+                stale: root.stale && root.panelShows("cursor")
+                visible: root.panelShows("cursor")
+                showCost: !root.cursorAvailable
+                costText: root.cursorAvailable ? "" : "—"
+                tooltipText: "Cursor" + (root.cursorPlanName ? "\n" + i18n("Plan: %1", root.cursorPlanName) : "") + (root.cursorAvailable ? "\n" + i18n("Included usage: %1%", Math.round(root.cursorTotalPct)) : "\n" + (root.cursorError || i18n("Not signed in"))) + (root.cursorResetTime ? "\n" + i18n("Resets: %1", root.cursorResetTime) : "")
+            }
+
+            PanelSlot {
+                property var openCodeStats: {
+                    var provider = root.rawProviderById("opencode");
+                    return provider && provider.details ? (provider.details.stats || ({})) : ({});
+                }
+                pct: 0
+                iconColor: "#B7B1B1"
+                iconSource: Qt.resolvedUrl("../icons/opencode-color.svg")
+                iconText: "OC"
+                stale: root.stale && root.panelShows("opencode")
+                visible: root.panelShows("opencode") && !root.showSettings
+                showCost: true
+                costText: openCodeStats.totalTokens > 0 ? root.formatTokens(openCodeStats.totalTokens) : "—"
+                tooltipText: {
+                    var sessions = Math.round(openCodeStats.totalSessions || 0);
+                    var tokens = root.formatTokens(openCodeStats.totalTokens || 0);
+                    return "OpenCode\n" + i18n("%1 tokens", tokens) + " · " + i18np("%1 session", "%1 sessions", sessions);
+                }
+            }
+
+            PanelSlot {
+                pct: root.museCurrentAvailable ? root.museCurrentPct : 0
+                iconColor: root.museBlue
+                iconSource: Qt.resolvedUrl("../icons/muse-color.svg")
+                iconText: "Mu"
+                stale: root.stale && root.panelShows("muse")
+                visible: root.panelShows("muse")
+                // With the billed quota off there is no percentage to fill, so
+                // the pill carries the lifetime total instead of an empty bar.
+                showCost: !root.museCurrentAvailable
+                costText: root.museTotalTokens > 0 ? root.formatTokens(root.museTotalTokens) : "—"
+                tooltipText: "Muse" + (root.museCurrentAvailable ? "\n" + i18n("Current: %1%", Math.round(root.museCurrentPct)) + (root.museCurrentCountdown ? " (" + root.museCurrentCountdown + ")" : "") : "") + (root.museWeeklyAvailable ? "\n" + i18n("Weekly: %1%", Math.round(root.museWeeklyPct)) : "") + (root.museModel ? "\n" + root.museModel : "") + (root.museTotalTokens > 0 ? "\n" + i18n("%1 tokens", root.formatTokens(root.museTotalTokens)) + " · " + i18np("%1 session", "%1 sessions", root.museStatsTotalSessions) : i18n("\nNo local sessions yet")) + (root.museCostUSD > 0 ? "\n" + i18n("Spend (est.): %1", root.formatMoney(root.museCostUSD, root.museCurrency)) : "")
             }
         }
     }
@@ -2168,6 +3170,12 @@ PlasmoidItem {
                 relayoutTimer.restart();
             }
 
+            // A settings section swap changes the panel's height the same way a
+            // tab swap does, and the dialog needs the same nudge to shrink back.
+            function onSettingsTabChanged() {
+                relayoutTimer.restart();
+            }
+
             target: root
         }
 
@@ -2190,8 +3198,19 @@ PlasmoidItem {
             anchors.fill: parent
             anchors.margins: -popupRoot.popupMargin
             radius: 12
+            clip: true
             border.width: 1
             border.color: Qt.rgba(1, 1, 1, 0.12)
+
+            // Custom background tint overlay (defaults to 0 opacity, i.e. invisible/glassy).
+            // Sits under the accent glow / provider watermark so raising the opacity
+            // tints the glass without blotting out the decoration on top of it.
+            Rectangle {
+                anchors.fill: parent
+                radius: parent.radius
+                color: root.resolvedPopupBg
+                visible: root.popupBgOpacity > 0
+            }
 
             // soft accent glow in the top-left, tinted by the active service accent
             Rectangle {
@@ -2201,6 +3220,7 @@ PlasmoidItem {
                 anchors.left: parent.left
                 radius: width / 2
                 opacity: 0.12
+                visible: root.popupDecoration === 0 || (root.popupDecoration === 1 && (providerWatermark.source === "" || providerWatermark.status === Image.Error))
 
                 gradient: Gradient {
                     GradientStop {
@@ -2213,6 +3233,21 @@ PlasmoidItem {
                         color: "transparent"
                     }
                 }
+            }
+
+            Image {
+                id: providerWatermark
+                anchors.top: parent.top
+                anchors.left: parent.left
+                width: parent.width * 0.7
+                height: parent.height * 0.7
+                sourceSize.width: 280
+                sourceSize.height: 280
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                opacity: 0.12
+                visible: root.popupDecoration === 1 && source !== "" && status !== Image.Error
+                source: root.showSettings ? Qt.resolvedUrl("../icons/org.muddyblack.aiUsageWidget.svg") : root.tabIcon(root.enabledTabs[root.activeTab] || "claude")
             }
 
             // crisp inner top highlight line
@@ -2243,15 +3278,6 @@ PlasmoidItem {
             }
         }
 
-        // Custom background tint overlay (defaults to 0 opacity, i.e. invisible/glassy)
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: -popupRoot.popupMargin
-            radius: 12
-            color: root.resolvedPopupBg
-            visible: root.popupBgOpacity > 0
-        }
-
         ColumnLayout {
             id: mainColumn
 
@@ -2273,20 +3299,10 @@ PlasmoidItem {
                 visible: !root._exportHideHeader
 
                 Item {
-                    width: 22
-                    height: 22
-
-                    // Masked Kirigami Icons (shown when NOT in Settings)
-                    Kirigami.Icon {
-                        visible: !root.showSettings
-                        anchors.centerIn: parent
-                        width: 22
-                        height: 22
-                        source: Qt.resolvedUrl("../icons/org.muddyblack.aiUsageWidget.svg")
-                        isMask: true
-                        color: root.tabColor(root.enabledTabs[root.activeTab] || "claude")
-                        opacity: 0.22
-                    }
+                    implicitWidth: 22
+                    implicitHeight: 22
+                    Layout.preferredWidth: 22
+                    Layout.preferredHeight: 22
 
                     // Brand logo of the active provider, falling back to the
                     // tinted widget logo for providers without artwork.
@@ -2341,43 +3357,57 @@ PlasmoidItem {
                     PlasmaComponents.Label {
                         text: {
                             if (root.showSettings)
-                                return "Settings";
+                                return i18n("Settings");
 
                             var tab = root.enabledTabs[root.activeTab];
                             if (tab === "claude")
-                                return "Claude Usage";
+                                return i18n("Claude Usage");
 
                             if (tab === "antigravity")
-                                return "Antigravity Usage";
+                                return i18n("Antigravity Usage");
 
                             if (tab === "openai")
-                                return "OpenAI Usage";
+                                return i18n("OpenAI Usage");
 
                             if (tab === "kiro")
-                                return "Kiro Usage";
+                                return i18n("Kiro Usage");
 
                             if (tab === "mistral")
-                                return "Mistral Usage";
+                                return i18n("Mistral Usage");
 
                             if (tab === "openrouter")
-                                return "OpenRouter Usage";
+                                return i18n("OpenRouter Usage");
+
+                            if (tab === "ollama")
+                                return i18n("Ollama Cloud Usage");
+                            if (tab === "selfhosted")
+                                return i18n("Local Models");
 
                             if (tab === "grok")
-                                return "Grok Usage";
+                                return i18n("Grok Usage");
 
                             if (tab === "zai")
-                                return "Z.AI Usage";
+                                return i18n("Z.AI Usage");
 
                             if (tab === "copilot")
-                                return "Copilot Usage";
+                                return i18n("Copilot Usage");
 
                             if (tab === "deepseek")
-                                return "DeepSeek Balance";
+                                return i18n("DeepSeek Balance");
 
                             if (tab === "kimi")
-                                return "Kimi Balance";
+                                return root.kimiPlanAvailable ? i18n("Kimi Usage") : i18n("Kimi Balance");
 
-                            return "AI Usage Monitor";
+                            if (tab === "cursor")
+                                return i18n("Cursor Usage");
+
+                            if (tab === "cline")
+                                return i18n("Cline Stats");
+
+                            if (tab === "opencode")
+                                return i18n("OpenCode Usage");
+
+                            return i18n("AI Usage Monitor");
                         }
                         font.bold: true
                         font.pixelSize: 15
@@ -2385,11 +3415,55 @@ PlasmoidItem {
                     }
 
                     PlasmaComponents.Label {
-                        visible: root.showSettings
-                        text: "Configure API keys and providers"
+                        visible: root.showSettings || root.enabledTabs[root.activeTab] === "overview" || root.enabledTabs[root.activeTab] === "sessions" || root.enabledTabs[root.activeTab] === "spend"
+                        text: {
+                            if (root.showSettings) {
+                                if (root.settingsTab === "panel")
+                                    return i18n("Views, colors, chart and popup style");
+
+                                if (root.settingsTab === "info")
+                                    return i18n("About AI Usage Monitor and project links");
+
+                                if (root.settingsTab === "data")
+                                    return i18n("Refresh interval and usage history");
+
+                                if (root.settingsTab === "advanced")
+                                    return i18n("Python interpreter and terminal tool");
+
+                                return i18n("Turn providers on and set their keys");
+                            }
+                            var tab = root.enabledTabs[root.activeTab];
+                            if (tab === "overview") {
+                                var count = 0;
+                                for (var i = 0; i < (root.enabledTabs || []).length; i++) {
+                                    var tid = root.enabledTabs[i];
+                                    if (tid !== "overview" && tid !== "spend" && tid !== "sessions")
+                                        count++;
+                                }
+                                return i18np("%1 provider", "%1 providers", count);
+                            }
+                            if (tab === "sessions")
+                                return sessionsTabView.loading ? i18n("Refreshing…") : i18np("%1 local session", "%1 local sessions", sessionsTabView.sessionsTotal || 0);
+                            if (tab === "spend") {
+                                // Provider/API total: metered spend and plan-inclusive spend
+                                return spendTabView ? spendTabView.summaryText : "";
+                            }
+                            return "";
+                        }
                         font.pixelSize: 10
                         opacity: 0.5
                         color: Kirigami.Theme.textColor
+
+                        MouseArea {
+                            id: subtitleMouseArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.NoButton
+                        }
+
+                        QQC2.ToolTip.visible: subtitleMouseArea.containsMouse && root.enabledTabs[root.activeTab] === "spend" && spendTabView && spendTabView.summaryTooltip !== ""
+                        QQC2.ToolTip.delay: 300
+                        QQC2.ToolTip.text: spendTabView ? spendTabView.summaryTooltip : ""
                     }
                 }
 
@@ -2407,20 +3481,20 @@ PlasmoidItem {
                     opacity: hovered ? 1 : 0.6
                     QQC2.ToolTip.visible: hovered && !exportMenu.visible
                     QQC2.ToolTip.delay: 400
-                    QQC2.ToolTip.text: "Export current tab as PNG or SVG"
+                    QQC2.ToolTip.text: i18n("Export current tab as PNG or SVG")
                     onClicked: exportMenu.popup()
 
                     QQC2.Menu {
                         id: exportMenu
 
                         QQC2.MenuItem {
-                            text: "Export as PNG"
+                            text: i18n("Export as PNG")
                             icon.name: "image-x-generic"
                             onTriggered: root.doExportSnapshot(mainColumn, "png")
                         }
 
                         QQC2.MenuItem {
-                            text: "Export as SVG"
+                            text: i18n("Export as SVG")
                             icon.name: "image-svg+xml"
                             onTriggered: root.doExportSnapshot(mainColumn, "svg")
                         }
@@ -2449,7 +3523,13 @@ PlasmoidItem {
                 PlasmaComponents.ToolButton {
                     icon.name: "view-refresh"
                     display: PlasmaComponents.AbstractButton.IconOnly
-                    onClicked: root.refresh()
+                    // Sessions come from a separate backend call, so root.refresh()
+                    // alone leaves the list untouched while it is on screen.
+                    onClicked: {
+                        root.refresh();
+                        if (sessionsTabView.visible)
+                            sessionsTabView.refresh();
+                    }
                     opacity: hovered ? 1 : 0.6
 
                     Behavior on opacity {
@@ -2470,8 +3550,10 @@ PlasmoidItem {
                     model: root.enabledTabs
 
                     Rectangle {
+                        id: tabPillItem
                         Layout.fillWidth: true
-                        height: 32
+                        implicitHeight: 32
+                        Layout.preferredHeight: 32
                         radius: 6
                         clip: true
                         color: root.activeTab === index ? Qt.rgba(1, 1, 1, 0.1) : "transparent"
@@ -2491,7 +3573,8 @@ PlasmoidItem {
                             QQC2.ToolTip.delay: 400
                             onClicked: function (mouse) {
                                 if (mouse.button === Qt.RightButton) {
-                                    root.togglePin(modelData);
+                                    if (!FeatureTabs.isFeatureTab(modelData))
+                                        root.togglePin(modelData);
                                     return;
                                 }
                                 root.activeTab = index;
@@ -2501,7 +3584,7 @@ PlasmoidItem {
 
                             Rectangle {
                                 anchors.fill: parent
-                                radius: parent.parent.radius
+                                radius: tabPillItem.radius
                                 color: parent.containsMouse && root.activeTab !== index ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
                             }
                         }
@@ -2568,7 +3651,7 @@ PlasmoidItem {
                             height: 11
                             source: "pin"
                             isMask: true
-                            visible: root.isPinned(modelData) || tabMouse.containsMouse || pinMouse.containsMouse
+                            visible: !FeatureTabs.isFeatureTab(modelData) && (root.isPinned(modelData) || tabMouse.containsMouse || pinMouse.containsMouse)
                             color: root.isPinned(modelData) ? root.tabColor(modelData) : Kirigami.Theme.textColor
                             opacity: root.isPinned(modelData) ? 1 : 0.4
 
@@ -2582,7 +3665,7 @@ PlasmoidItem {
                                 onClicked: root.togglePin(modelData)
                                 QQC2.ToolTip.visible: containsMouse
                                 QQC2.ToolTip.delay: 400
-                                QQC2.ToolTip.text: root.isPinned(modelData) ? "Unpin from panel" : "Pin on panel"
+                                QQC2.ToolTip.text: root.isPinned(modelData) ? i18n("Unpin from panel") : i18n("Pin on panel")
                             }
                         }
 
@@ -2597,11 +3680,26 @@ PlasmoidItem {
 
             Rectangle {
                 Layout.fillWidth: true
-                height: 1
+                implicitHeight: 1
+                Layout.preferredHeight: 1
                 color: Qt.rgba(1, 1, 1, 0.08)
             }
 
             SettingsPanel {
+                rootItem: root
+            }
+
+            OverviewTab {
+                rootItem: root
+            }
+
+            SpendTab {
+                id: spendTabView
+                rootItem: root
+            }
+
+            SessionsTab {
+                id: sessionsTabView
                 rootItem: root
             }
 
@@ -2629,6 +3727,14 @@ PlasmoidItem {
                 rootItem: root
             }
 
+            OllamaTab {
+                rootItem: root
+            }
+
+            SelfhostedTab {
+                rootItem: root
+            }
+
             GrokTab {
                 rootItem: root
             }
@@ -2649,6 +3755,22 @@ PlasmoidItem {
                 rootItem: root
             }
 
+            MuseTab {
+                rootItem: root
+            }
+
+            CursorTab {
+                rootItem: root
+            }
+
+            ClineTab {
+                rootItem: root
+            }
+
+            OpenCodeTab {
+                rootItem: root
+            }
+
             UsageChart {
                 rootItem: root
             }
@@ -2660,8 +3782,10 @@ PlasmoidItem {
 
                 Rectangle {
                     visible: root.errorMsg !== ""
-                    width: 6
-                    height: 6
+                    implicitWidth: 6
+                    implicitHeight: 6
+                    Layout.preferredWidth: 6
+                    Layout.preferredHeight: 6
                     radius: 3
                     color: root.dangerColor
                     Layout.alignment: Qt.AlignVCenter
@@ -2669,7 +3793,7 @@ PlasmoidItem {
 
                 PlasmaComponents.Label {
                     visible: root.errorMsg !== ""
-                    text: root.errorMsg
+                    text: root.errorText(root.errorMsg)
                     color: root.dangerColor
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     Layout.alignment: Qt.AlignVCenter
@@ -2708,15 +3832,15 @@ PlasmoidItem {
                         QQC2.ToolTip.visible: containsMouse
                         QQC2.ToolTip.delay: 300
                         QQC2.ToolTip.text: {
-                            var l = ["Combined API spend"];
+                            var l = [i18n("Combined API spend")];
                             if (root.claudeTotalCostUSD > 0)
-                                l.push("Claude (30d): $" + root.claudeTotalCostUSD.toFixed(2));
+                                l.push(i18n("Claude (30d): $%1", root.claudeTotalCostUSD.toFixed(2)));
 
                             if (root.openaiTotalCostUSD > 0)
-                                l.push("OpenAI (30d): $" + root.openaiTotalCostUSD.toFixed(2));
+                                l.push(i18n("OpenAI (30d): $%1", root.openaiTotalCostUSD.toFixed(2)));
 
                             if (root.openrouterUsageUSD > 0)
-                                l.push("OpenRouter (all-time): $" + root.openrouterUsageUSD.toFixed(2));
+                                l.push(i18n("OpenRouter (all-time): $%1", root.openrouterUsageUSD.toFixed(2)));
 
                             return l.join("\n");
                         }
@@ -2725,7 +3849,7 @@ PlasmoidItem {
 
                 PlasmaComponents.Label {
                     visible: root.lastUpdate !== "" && root.errorMsg === ""
-                    text: "updated " + root.lastUpdate + (root.stale ? " · stale" : "")
+                    text: (root.stale ? i18n("updated %1 · stale", root.lastUpdate) : i18n("updated %1", root.lastUpdate))
                     opacity: 0.45
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                 }

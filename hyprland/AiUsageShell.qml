@@ -11,7 +11,14 @@ import Quickshell.Io
 // would escape it and load as qrc:/qs-blackhole.
 import "../package/contents/code/Format.js" as Format
 import "../package/contents/code/UsageHistory.js" as UsageHistory
+import "../package/contents/code/FeatureTabs.js" as FeatureTabs
+import "../package/contents/code/SessionSources.js" as SessionSources
+import "ProviderRegistry.js" as ProviderRegistry
+import "../package/contents/code/I18n.js" as I18n
 
+// The popup's content is PopupContent.qml, shared with the Windows tray app
+// (windows/qml/Main.qml); this root implements the `shell` interface it and
+// SettingsPage.qml read. Keep the two roots' interfaces in step.
 ShellRoot {
     id: root
 
@@ -21,6 +28,63 @@ ShellRoot {
     readonly property string iconSource: "file://" + baseDir + "/../package/contents/icons/org.muddyblack.aiUsageWidget.svg"
     readonly property string iconDir: "file://" + baseDir + "/../package/contents/icons/"
 
+    // Translations: the Plasma widget's translate/<lang>.po, parsed by I18n.js.
+    // The shared QML calls shell.i18n(…), which xgettext extracts into that
+    // catalog; those bindings re-run once catalogLoad below has read it.
+    property var catalog: I18n.empty()
+    function i18n(text) {
+        return I18n.i18n.apply(null, [root.catalog].concat(Array.prototype.slice.call(arguments)));
+    }
+    function i18nc(context, text) {
+        return I18n.i18nc.apply(null, [root.catalog].concat(Array.prototype.slice.call(arguments)));
+    }
+    function i18np(singular, plural, n) {
+        return I18n.i18np.apply(null, [root.catalog].concat(Array.prototype.slice.call(arguments)));
+    }
+    function i18ncp(context, singular, plural, n) {
+        return I18n.i18ncp.apply(null, [root.catalog].concat(Array.prototype.slice.call(arguments)));
+    }
+
+    // $LANGUAGE first, as gettext does, then the locale's own list.
+    function systemLanguages() {
+        var list = (Quickshell.env("LANGUAGE") || "").split(":");
+        var ui = Qt.locale().uiLanguages;
+        for (var i = 0; i < ui.length; i++)
+            list.push(ui[i]);
+        return I18n.languageCandidates(list);
+    }
+
+    // The settings page's choice: "" follows the system, "en" is the untranslated
+    // source, anything else names a translate/<lang>.po.
+    readonly property string language: root.settings.language || ""
+    onLanguageChanged: root.loadCatalog()
+    Component.onCompleted: root.loadCatalog()
+
+    function loadCatalog() {
+        catalogLoad.exec({
+            command: ["sh", "-c", "for l in \"$@\"; do [ -f \"$0/$l.po\" ] && exec cat \"$0/$l.po\"; done; true", root.baseDir + "/../translate"].concat(root.language !== "" ? [root.language] : root.systemLanguages())
+        });
+    }
+
+    Process {
+        id: catalogLoad
+        stdout: StdioCollector {
+            onStreamFinished: root.catalog = I18n.parsePo(this.text)
+        }
+    }
+
+    // The catalogs present, for the language picker.
+    property var availableLanguages: []
+    Process {
+        command: ["sh", "-c", "for f in \"$0\"/*.po; do [ -f \"$f\" ] && basename \"$f\" .po; done; true", root.baseDir + "/../translate"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: root.availableLanguages = this.text.split("\n").filter(function (l) {
+                return l !== "";
+            })
+        }
+    }
+
     // Brand logo for a provider, or "" when the backend ships no artwork for it
     // (callers fall back to the plain accent dot). The id→file mapping lives in
     // the backend contract so both frontends agree on it.
@@ -28,14 +92,6 @@ ShellRoot {
         var file = provider && provider.icon ? provider.icon : "";
         return file === "" ? "" : root.iconDir + file;
     }
-
-    // Shared with the Plasma widget: both variants mirror history to this file.
-    readonly property string historyDir: {
-        var xdg = Quickshell.env("XDG_DATA_HOME");
-        var base = (xdg && xdg !== "") ? xdg : (Quickshell.env("HOME") + "/.local/share");
-        return base + "/ai-usage-widget";
-    }
-    readonly property string historyPath: historyDir + "/usage-history-latest.json"
 
     // Settings the in-popup page writes; the backend reads the same file
     // (AI_USAGE_CONFIG / XDG_CONFIG_HOME) for provider toggles + API keys.
@@ -47,58 +103,28 @@ ShellRoot {
     readonly property string configPath: configDir + "/hyprland-settings.json"
 
     // All known providers, in display order (used by the settings toggles).
-    readonly property var allProviders: [
-        {
-            id: "claude",
-            label: "Claude",
-            accent: "#cc785c"
-        },
-        {
-            id: "antigravity",
-            label: "Antigravity",
-            accent: "#4285f4"
-        },
-        {
-            id: "openai",
-            label: "OpenAI",
-            accent: "#10a37f"
-        },
-        {
-            id: "kiro",
-            label: "Kiro",
-            accent: "#8b5cf6"
-        },
-        {
-            id: "mistral",
-            label: "Mistral",
-            accent: "#ff7000"
-        },
-        {
-            id: "openrouter",
-            label: "OpenRouter",
-            accent: "#9333ea"
-        },
-        {
-            id: "grok",
-            label: "Grok",
-            accent: "#e6e6e6"
-        },
-        {
-            id: "zai",
-            label: "Z.AI",
-            accent: "#8a8f98"
-        },
-        {
-            id: "copilot",
-            label: "Copilot",
-            accent: "#8b5cf6"
-        },
-        {
-            id: "deepseek",
-            label: "DeepSeek",
-            accent: "#4f8cff"
-        }
-    ]
+    readonly property var allProviders: ProviderRegistry.providers
+
+    // Which rows of the shared settings page apply here: this frontend has the
+    // floating pill and runs the backend through a chosen interpreter, while
+    // starting it at login is the compositor config's business.
+    readonly property bool pillControls: true
+    readonly property bool interpreterControls: true
+    readonly property bool autostartAvailable: false
+    // Tray styles and a floating pill are the Windows app's; this has a real panel.
+    readonly property bool trayOptions: false
+    readonly property bool autostart: false
+    function setAutostart(enabled) {
+    }
+
+    // Connected outputs by name, for the settings page's monitor picker.
+    readonly property var screenNames: {
+        var names = [];
+        var screens = Quickshell.screens;
+        for (var i = 0; i < screens.length; i++)
+            names.push(screens[i].name);
+        return names;
+    }
 
     // Live settings model. providers[id] === false → hidden; keys[*] → API keys.
     property var settings: ({
@@ -106,17 +132,32 @@ ShellRoot {
             keys: {},
             pollSec: 300,
             showChart: true,
+            // The backend reads this straight out of the JSON, but it has to
+            // survive a round-trip through this object too: saveSettings()
+            // writes the whole thing back, so a field missing here is a field
+            // erased from the file by the next unrelated setting change.
+            museQuota: false,
+            overviewEnabled: false,
+            spendEnabled: false,
+            sessionsEnabled: true,
+            antigravityChartFilter: "both",
             pillMode: "always",
             position: "top-right",
             monitor: "focused",
-            pythonPath: ""
+            pythonPath: "",
+            language: ""
         })
+    property bool providerDefaultsReady: false
+    property bool providerDefaultsInitializing: false
+    property bool providerDefaultsResponseDone: false
+    property bool providerDefaultsExited: false
     property bool showSettings: false
     // Tray-triggered reveal is legitimately global — one tray icon controls
     // every monitor's pill together. Edge-hover reveal is NOT: with a pill on
     // every output, hovering one screen's edge must not pop out the others, so
     // that state lives per PanelWindow instance (panel.hoverRevealed) instead.
     property bool trayPillRevealed: false
+    readonly property string antigravityChartFilter: root.settings.antigravityChartFilter || "both"
     readonly property string pillMode: root.settings.pillMode || "always"
     readonly property string windowPosition: root.settings.position || "top-right"
     readonly property bool positionTop: root.windowPosition.indexOf("top-") === 0
@@ -185,9 +226,7 @@ ShellRoot {
     }
 
     function providerEnabled(id) {
-        if (id === "zai" || id === "copilot" || id === "deepseek")
-            return root.settings.providers[id] === true;
-        return root.settings.providers[id] !== false;
+        return ProviderRegistry.enabled(root.settings, id);
     }
 
     Process {
@@ -198,18 +237,79 @@ ShellRoot {
             onStreamFinished: {
                 try {
                     var d = JSON.parse(this.text.trim());
-                    root.settings = {
-                        providers: d.providers || {},
-                        keys: d.keys || {},
-                        pollSec: d.pollSec || 300,
-                        showChart: d.showChart !== false,
-                        pillMode: d.pillMode || (d.floatingPill === false ? "tray" : "always"),
-                        position: d.position || "top-right",
-                        monitor: d.monitor || "focused",
-                        pythonPath: d.pythonPath || ""
-                    };
+                    // Every field is carried through, known here or not:
+                    // saveSettings() writes the whole object back, and on Linux
+                    // the Windows tray app shares this file and keeps its own
+                    // switches in it (trayNumbers).
+                    var s = Object.assign({}, d);
+                    s.providers = d.providers || {};
+                    s.keys = d.keys || {};
+                    s.pollSec = d.pollSec || 300;
+                    s.showChart = d.showChart !== false;
+                    s.museQuota = d.museQuota === true;
+                    s.overviewEnabled = d.overviewEnabled === true;
+                    s.spendEnabled = d.spendEnabled === true;
+                    s.sessionsEnabled = d.sessionsEnabled !== false;
+                    s.antigravityChartFilter = d.antigravityChartFilter || "both";
+                    s.pillMode = d.pillMode || (d.floatingPill === false ? "tray" : "always");
+                    s.position = d.position || "top-right";
+                    s.monitor = d.monitor || "focused";
+                    s.pythonPath = d.pythonPath || "";
+                    s.language = d.language || "";
+                    root.settings = s;
                 } catch (e) {}
+                root.initializeProviderDefaults();
             }
+        }
+    }
+
+    function mergeProviderDefaults(settings) {
+        var merged = Object.assign({}, root.settings || {}, settings || {});
+        merged.providers = Object.assign({}, (root.settings || {}).providers || {}, (settings || {}).providers || {});
+        root.settings = merged;
+    }
+
+    function finishProviderDefaults() {
+        if (!root.providerDefaultsResponseDone || !root.providerDefaultsExited || root.providerDefaultsReady)
+            return;
+        root.providerDefaultsInitializing = false;
+        root.providerDefaultsReady = true;
+        root.refresh();
+    }
+
+    function initializeProviderDefaults() {
+        if (root.providerDefaultsReady || root.providerDefaultsInitializing)
+            return;
+        if (root.settings.providerDefaultsApplied === true) {
+            root.providerDefaultsReady = true;
+            root.refresh();
+            return;
+        }
+        root.providerDefaultsInitializing = true;
+        root.providerDefaultsResponseDone = false;
+        root.providerDefaultsExited = false;
+        providerDefaultsProcess.exec({
+            command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" --initialize-provider-defaults", "ai-usage", root.settings.pythonPath || "", root.backendCommand],
+            workingDirectory: root.baseDir + "/.."
+        });
+    }
+
+    Process {
+        id: providerDefaultsProcess
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var result = JSON.parse((this.text || "").trim());
+                    if (result.ok === true && result.data)
+                        root.mergeProviderDefaults(result.data);
+                } catch (e) {}
+                root.providerDefaultsResponseDone = true;
+                root.finishProviderDefaults();
+            }
+        }
+        onExited: {
+            root.providerDefaultsExited = true;
+            root.finishProviderDefaults();
         }
     }
 
@@ -243,11 +343,11 @@ ShellRoot {
 
     property string historyMsg: ""
 
-    // Export a timestamped copy of the shared history via history-io.
+    // Export a timestamped copy of the shared history via history-io, which
+    // snapshots the file itself rather than taking the series on a command line.
     function exportHistory() {
-        var tool = root.baseDir + "/../package/contents/tools/sh/history-io";
         exportProcess.exec({
-            command: ["sh", "-c", "PYTHON3=\"$1\" WIDGET_HISTORY_JSON=\"$2\" exec \"$3\" export", "ai-usage", root.settings.pythonPath || "", JSON.stringify(root.usageHistory), tool]
+            command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" export", "ai-usage", root.settings.pythonPath || "", root.historyTool()]
         });
     }
 
@@ -257,9 +357,9 @@ ShellRoot {
             onStreamFinished: {
                 try {
                     var r = JSON.parse(this.text.trim());
-                    root.historyMsg = r.path ? "Saved to " + r.path : (r.error || "Export failed");
+                    root.historyMsg = r.path ? root.i18n("Saved to %1", r.path) : (r.error || root.i18n("Export failed"));
                 } catch (e) {
-                    root.historyMsg = "Export failed";
+                    root.historyMsg = root.i18n("Export failed");
                 }
                 historyMsgTimer.restart();
             }
@@ -273,7 +373,74 @@ ShellRoot {
     }
 
     property var providers: []
+    property var localSpend: ({})
+    // Local sessions for the optional Sessions tab.
+    property var sessions: []
+    property bool sessionsLoading: false
+    property string sessionsError: ""
+    // Last `--open-session` result, shown as a status line under the list.
+    property string sessionsNotice: ""
+    property bool pricingLoading: false
+    property bool providerDetectBusy: false
+    property string providerDetectStatus: ""
+    property string pricingStatus: ""
+    property string pricingError: ""
+    property string sessionsQuery: ""
+    property var sessionsSources: []
+    property var sessionsSourceIds: []
+    property string sessionsSourceSignature: ""
+    property string sessionsSourceResetSignature: ""
+    property string sessionsActiveQuery: ""
+    property var sessionsActiveSourceIds: []
+    property string sessionsActiveSourceSignature: ""
+    property int sessionsRequestId: 0
+    property int sessionsActiveRequestId: 0
+    readonly property int sessionsLimit: 60
+    property int sessionsTotal: 0
+    property bool sessionsHasMore: false
+    property int sessionsOffset: 0
+    property int sessionsActiveOffset: 0
+    property bool sessionsActiveAppend: false
+    property bool sessionsActiveRefresh: false
+    property bool sessionsFollowup: false
+    property int sessionsFollowupOffset: 0
+    property bool sessionsFollowupAppend: false
+    property bool sessionsFollowupRefresh: false
+    property bool sessionsResponseDone: false
+    property bool sessionsProcessExited: false
+    readonly property bool sessionsViewVisible: root.popupOpen && !root.showSettings && root.activeId === "sessions"
+
+    // Load as soon as the view is shown. The poll timer only reconciles when
+    // the tab is already visible, so opening the popup onto Sessions used to
+    // leave it empty until the next tick or a manual refresh.
+    onSessionsViewVisibleChanged: {
+        if (root.sessionsViewVisible && !root.sessionsLoading)
+            root.reconcileSessions(root.sessionsQuery);
+    }
     property string activeId: ""
+    // The last real provider selected (never a feature tab id) — what the
+    // panel pill shows while a feature tab (Overview/Spend/Sessions) is
+    // active, since those have no percentage of their own to display.
+    property string lastProviderId: ""
+    // Feature tabs (Overview / Spend / Sessions) sit ahead of providers.
+    readonly property var popupTabs: {
+        var tabs = [];
+        var features = FeatureTabs.enabledFeatureTabs(root.settings);
+        for (var i = 0; i < features.length; i++) {
+            var id = features[i];
+            tabs.push({
+                id: id,
+                label: FeatureTabs.label(id, root.i18n),
+                accent: FeatureTabs.accent(id) || "#38bdf8",
+                icon: "",
+                feature: true
+            });
+        }
+        for (var j = 0; j < root.providers.length; j++)
+            tabs.push(root.providers[j]);
+        return tabs;
+    }
+    readonly property bool activeIsFeature: FeatureTabs.isFeatureTab(root.activeId)
     property string errorText: ""
     property bool loading: false
     property bool popupOpen: false
@@ -282,7 +449,7 @@ ShellRoot {
     // Unified usage history: [{t, s, w, cp, cw, kr, ag, or, mv, gr, za, gh, ds}] — same format
     // as the Plasma widget so the chart survives across both.
     property var usageHistory: []
-    readonly property int historyLimit: 500
+    readonly property int historyLimit: 10000
 
     // Clock driving the countdown chips (30 s tick).
     property double nowTick: new Date().getTime()
@@ -293,8 +460,26 @@ ShellRoot {
     property string chartWindow: "weekly"
     property string chartGranularity: "7d"
 
+    // Inner sub-tab for providers with activity stats (claude, openai,
+    // copilot, muse): "usage" vs "stats"
+    property string activeSubTab: "usage"
+    readonly property bool activeHasStats: {
+        if (root.activeIsFeature)
+            return false;
+        var p = activeProvider();
+        return p && (p.id === "claude" || p.id === "openai" || p.id === "copilot" || p.id === "muse" || p.id === "cursor" || p.id === "cline" || p.id === "opencode");
+    }
+
+    function providerById(id) {
+        for (var i = 0; i < root.providers.length; i++) {
+            if (root.providers[i].id === id)
+                return root.providers[i];
+        }
+        return null;
+    }
+
     function activeProvider() {
-        if (root.providers.length === 0)
+        if (root.activeIsFeature || root.providers.length === 0)
             return null;
         for (var i = 0; i < root.providers.length; i++) {
             if (root.providers[i].id === root.activeId)
@@ -303,7 +488,17 @@ ShellRoot {
         return root.providers[0];
     }
 
+    // What the panel pill shows: the active provider normally, or the last
+    // real provider seen while a feature tab is active — never "no data".
+    function pillProvider() {
+        if (!root.activeIsFeature)
+            return root.activeProvider();
+        return root.providerById(root.lastProviderId) || root.providers[0] || null;
+    }
+
     readonly property color activeAccent: {
+        if (root.activeIsFeature)
+            return FeatureTabs.accent(root.activeId) || "#38bdf8";
         var p = activeProvider();
         return p ? p.accent : "#cc785c";
     }
@@ -342,9 +537,14 @@ ShellRoot {
     }
 
     onActiveIdChanged: {
+        activeSubTab = "usage";
         var win = windowForProvider(root.activeId, root.chartGranularity);
         if (root.chartWindow !== win)
             root.chartWindow = win;
+        if (root.activeId !== "" && !FeatureTabs.isFeatureTab(root.activeId))
+            root.lastProviderId = root.activeId;
+        if (root.providerDefaultsReady && root.activeId !== "" && (root.settings || {}).lastTab !== root.activeId)
+            root.setSetting2("lastTab", root.activeId);
     }
 
     function selectChartWindow(id) {
@@ -360,31 +560,122 @@ ShellRoot {
     }
 
     // ── History persistence ──────────────────────────────────────────────────
+    // Both frontends go through tools/sh/history-io, which owns the shared file:
+    // it takes a lock, unions the payload into whatever is on disk, replaces the
+    // file by rename and hands the merged series back. So a save is also how the
+    // Plasma widget's points reach this panel while both are running.
+    //
+    // What goes out, when, and what comes back is the state machine in
+    // UsageHistory.js, shared with the Plasma widget. Left here: the transport,
+    // the clock and the watchdog.
+    //
+    // The file is still never written before it has been read, because the
+    // startup read is async while the poll timer fires immediately.
+    property var historyStore: UsageHistory.newStore(root.historyLimit)
+
+    function historyTool() {
+        return root.baseDir + "/../package/contents/tools/sh/history-io";
+    }
+
+    // The store replaces `history` rather than patching it in place, so an
+    // unchanged reference means there is nothing to repaint.
+    function syncUsageHistory() {
+        if (root.usageHistory !== root.historyStore.history)
+            root.usageHistory = root.historyStore.history;
+    }
+
+    // Recorded on every poll even when no provider reported, which is what
+    // releases a save that failed.
     function recordHistory() {
-        var history = UsageHistory.merge(root.usageHistory, UsageHistory.collect(root.providers), new Date().getTime(), root.historyLimit);
-        if (history === root.usageHistory)
+        UsageHistory.record(root.historyStore, UsageHistory.collect(root.providers), new Date().getTime());
+        root.syncUsageHistory();
+        root.saveHistory();
+    }
+
+    // take() decides whether there is anything to send, and what. The process
+    // check is on top of that: exec() cannot start the next one until this one
+    // has been reaped.
+    function saveHistory() {
+        if (saveProcess.running)
             return;
-        root.usageHistory = history;
+
+        var batch = UsageHistory.take(root.historyStore);
+        if (!batch)
+            return;
+
+        historySaveTimeout.restart();
         saveProcess.exec({
-            command: ["sh", "-c", "mkdir -p \"$(dirname \"$2\")\"; printf '%s' \"$1\" > \"$2\"", "ai-usage", JSON.stringify(history), root.historyPath]
+            command: ["sh", "-c", "PYTHON3=\"$1\" WIDGET_HISTORY_JSON=\"$2\" exec \"$3\" \"$4\"", "ai-usage", root.settings.pythonPath || "", JSON.stringify(batch.points), root.historyTool(), batch.op]
         });
+    }
+
+    function finishHistorySave(merged) {
+        historySaveTimeout.stop();
+        UsageHistory.done(root.historyStore, merged);
+        root.syncUsageHistory();
+        // Goes now if the process is already reaped; onExited covers the rest.
+        root.saveHistory();
+    }
+
+    function failHistorySave() {
+        historySaveTimeout.stop();
+        UsageHistory.failed(root.historyStore);
+    }
+
+    // A save that never answers would otherwise hold its batch in flight for the
+    // rest of the session and stop this panel mirroring at all. Kill it, and
+    // unwind whether or not the kill produces a last empty answer to unwind on —
+    // failed() is idempotent, so whichever happens first is the one that counts.
+    Timer {
+        id: historySaveTimeout
+        interval: 30000
+        onTriggered: {
+            saveProcess.running = false;
+            root.failHistorySave();
+        }
     }
 
     Process {
         id: saveProcess
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var res = null;
+                try {
+                    res = JSON.parse(this.text.trim());
+                } catch (e) {}
+                if (!res || res.error) {
+                    root.failHistorySave();
+                    return;
+                }
+                // The degraded write answers {"ok":true} with no series, which
+                // leaves nothing to adopt.
+                root.finishHistorySave(res.data);
+            }
+        }
+        // The answer and the exit arrive in either order and the next batch needs
+        // both, so both ends try and take() ignores whichever is early. take()
+        // also hands out nothing after a failure — without that, unwinding the
+        // batch and starting it again here is a loop of failing saves.
+        onExited: root.saveHistory()
     }
 
     Process {
         id: loadProcess
-        command: ["sh", "-c", "cat \"$1\" 2>/dev/null || printf '[]'", "ai-usage", root.historyPath]
+        command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" autoload", "ai-usage", root.settings.pythonPath || "", root.historyTool()]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    var data = JSON.parse(this.text.trim());
-                    if (Array.isArray(data))
-                        root.usageHistory = UsageHistory.normalize(data, root.historyLimit);
+                    var r = JSON.parse(this.text.trim());
+                    if (r && Array.isArray(r.data)) {
+                        // Samples taken while this read was in flight are this
+                        // panel's own and stay on top of the file's.
+                        UsageHistory.adopt(root.historyStore, r.data);
+                        root.syncUsageHistory();
+                    }
                 } catch (e) {}
+                UsageHistory.opened(root.historyStore);
+                root.saveHistory();
             }
         }
     }
@@ -395,25 +686,361 @@ ShellRoot {
         try {
             var data = JSON.parse((text || "").trim());
             root.providers = data.providers || [];
+            root.localSpend = data.localSpend || ({});
             root.updatedAt = data.updatedAt || 0;
-            // Keep the active tab if it's still present; otherwise fall back to
-            // the backend's suggestion or the first provider (e.g. after the
-            // active provider is disabled in settings).
-            var stillThere = false;
-            for (var i = 0; i < root.providers.length; i++)
-                if (root.providers[i].id === root.activeId)
-                    stillThere = true;
-            if (!stillThere)
-                root.activeId = data.active || (root.providers[0] || {}).id || "";
+            // Seed (or heal, if the remembered one got disabled) the pill's
+            // fallback provider — needed even before the user ever leaves a
+            // feature tab, since Sessions is the default-enabled one.
+            if (!root.providerById(root.lastProviderId))
+                root.lastProviderId = data.active || (root.providers[0] || {}).id || "";
+            // Keep the active tab if it's still present; otherwise reopen the
+            // tab used last time, else the backend's suggestion or the first
+            // provider — never a feature tab by default, so the pill mirrors a
+            // real provider from the first start. Feature tabs stay put.
+            var features = FeatureTabs.enabledFeatureTabs(root.settings);
+            var isOpenable = function (id) {
+                return features.indexOf(id) !== -1 || !!root.providerById(id);
+            };
+            if (!isOpenable(root.activeId)) {
+                var last = (root.settings || {}).lastTab || "";
+                root.activeId = isOpenable(last) ? last : (data.active || (root.providers[0] || {}).id || "");
+            }
             root.errorText = "";
             root.nowTick = new Date().getTime();
             root.recordHistory();
         } catch (e) {
-            root.errorText = "usage backend returned no data";
+            root.errorText = root.i18n("usage backend returned no data");
+        }
+    }
+
+    function setSessionsQuery(query) {
+        query = (query || "").trim();
+        if (query === root.sessionsQuery)
+            return;
+        root.sessionsQuery = query;
+        root.sessionsRequestId += 1;
+        root.sessionsOffset = 0;
+        root.sessionsTotal = 0;
+        root.sessionsHasMore = false;
+        if (sessionsProcess.running)
+            root.queueSessionsRequest(0, false, false);
+    }
+
+    function normalizeSessionSources(raw) {
+        return SessionSources.normalizeDescriptors(raw);
+    }
+
+    function sessionSourceSignature(ids) {
+        return SessionSources.signature(ids);
+    }
+
+    function sessionSourceSelectionHasStaleIds(available) {
+        return SessionSources.hasStaleIds(root.sessionsSourceIds, available);
+    }
+
+    function setSessionsSourceIds(ids) {
+        var normalized = SessionSources.normalizeIds(ids, root.sessionsSources);
+        var signature = root.sessionSourceSignature(normalized);
+        if (signature === root.sessionsSourceSignature)
+            return;
+        root.sessionsSourceIds = normalized;
+        root.sessionsSourceSignature = signature;
+        root.sessionsRequestId += 1;
+        root.sessionsOffset = 0;
+        root.sessionsTotal = 0;
+        root.sessionsHasMore = false;
+        if (sessionsProcess.running)
+            root.queueSessionsRequest(0, false, false);
+    }
+
+    function queueSessionsRequest(offset, append, refreshMode) {
+        root.sessionsFollowup = true;
+        root.sessionsFollowupOffset = offset;
+        root.sessionsFollowupAppend = append;
+        root.sessionsFollowupRefresh = refreshMode === true;
+    }
+
+    function startSessionsRequest(offset, append, refreshMode) {
+        root.sessionsActiveQuery = root.sessionsQuery;
+        root.sessionsActiveSourceIds = root.sessionsSourceIds.slice(0);
+        root.sessionsActiveSourceSignature = root.sessionsSourceSignature;
+        root.sessionsActiveRequestId = root.sessionsRequestId;
+        root.sessionsActiveOffset = offset;
+        root.sessionsActiveAppend = append;
+        root.sessionsActiveRefresh = refreshMode === true;
+        root.sessionsFollowup = false;
+        root.sessionsResponseDone = false;
+        root.sessionsProcessExited = false;
+        if (!append) {
+            root.sessionsOffset = 0;
+            root.sessionsTotal = 0;
+            root.sessionsHasMore = false;
+        }
+        root.sessionsLoading = true;
+        root.sessionsError = "";
+        root.sessionsNotice = "";
+        sessionsProcess.exec({
+            command: root.sessionsCommand()
+        });
+    }
+
+    // Settings → Providers → "Detect installed providers": re-runs the
+    // stat-only detection and switches on what it finds (never off).
+    function applyProviderDetection(result) {
+        root.providerDetectBusy = false;
+        if (!result || result.ok !== true || !Array.isArray(result.data)) {
+            root.providerDetectStatus = root.i18n("Detection failed.");
+            return;
+        }
+        var applied = ProviderRegistry.applyDetected(root.settings, result.data);
+        if (applied.added.length === 0) {
+            root.providerDetectStatus = root.i18n("No new providers found.");
+            return;
+        }
+        root.settings = applied.settings;
+        root.saveSettings();
+        root.providerDetectStatus = root.i18n("Enabled: %1", ProviderRegistry.labels(applied.added));
+        root.refresh();
+    }
+
+    function redetectProviders() {
+        if (providerDetectProcess.running)
+            return;
+        root.providerDetectBusy = true;
+        root.providerDetectStatus = "";
+        providerDetectProcess.exec({
+            command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" --detect-providers", "ai-usage", root.settings.pythonPath || "", root.backendCommand]
+        });
+    }
+
+    Process {
+        id: providerDetectProcess
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var result = null;
+                try {
+                    result = JSON.parse((this.text || "").trim());
+                } catch (e) {}
+                root.applyProviderDetection(result);
+            }
+        }
+    }
+
+    function refreshPricing() {
+        if (pricingProcess.running)
+            return;
+        root.pricingLoading = true;
+        pricingProcess.exec({
+            command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" --refresh-pricing", "ai-usage", root.settings.pythonPath || "", root.backendCommand]
+        });
+    }
+
+    Process {
+        id: pricingProcess
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var data = JSON.parse((this.text || "").trim());
+                    root.pricingStatus = data.status || (data.ok === true ? "refreshed" : "no-cache");
+                    root.pricingError = data.error || "";
+                    if (data.ok === true)
+                        root.refresh();
+                } catch (e) {
+                    root.pricingStatus = "no-cache";
+                    root.pricingError = root.i18n("Could not refresh pricing.");
+                }
+            }
+        }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                var message = this.text.trim();
+                if (message !== "")
+                    root.pricingError = message.split("\n")[0];
+            }
+        }
+        onExited: function (exitCode) {
+            root.pricingLoading = false;
+            if (root.pricingStatus === "") {
+                root.pricingStatus = "no-cache";
+                if (root.pricingError === "")
+                    root.pricingError = root.i18n("Could not refresh pricing.");
+            }
+        }
+    }
+
+    Process {
+        id: rateProcess
+        property var callback: null
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var payload = FeatureTabs.parseRateTable(this.text);
+                if (typeof rateProcess.callback === "function") {
+                    var cb = rateProcess.callback;
+                    rateProcess.callback = null;
+                    cb(payload);
+                }
+            }
+        }
+        onExited: function (exitCode) {
+            if (exitCode !== 0 && typeof rateProcess.callback === "function") {
+                var cb = rateProcess.callback;
+                rateProcess.callback = null;
+                cb(null);
+            }
+        }
+    }
+
+    function queryRates(filter, limit, offset, callback) {
+        if (rateProcess.running)
+            return;
+        rateProcess.callback = callback;
+        rateProcess.exec({
+            command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" --pricing-table --query \"$3\" --limit \"$4\" --offset \"$5\"", "ai-usage", root.settings.pythonPath || "", root.backendCommand, (filter || "").trim(), String(limit), String(offset)]
+        });
+    }
+
+    function sessionsCommand() {
+        var mode = root.sessionsActiveRefresh ? "--refresh" : "--query-only";
+        var script = "PYTHON3=\"$1\" exec \"$2\" --sessions " + mode + " --query \"$3\"";
+        var command = ["sh", "-c", script, "ai-usage", root.settings.pythonPath || "", root.backendCommand, root.sessionsActiveQuery];
+        command[2] += " --limit \"$4\" --offset \"$5\"";
+        command.push(String(root.sessionsLimit), String(root.sessionsActiveOffset));
+        if (root.sessionsActiveSourceIds.length > 0) {
+            command[2] += " --source \"$6\"";
+            command.push(root.sessionsActiveSourceIds.join(","));
+        }
+        return command;
+    }
+
+    function refreshSessions(query, offset, append, sourceIds) {
+        if (sourceIds !== undefined)
+            root.setSessionsSourceIds(sourceIds);
+        root.setSessionsQuery(query);
+        if (sessionsProcess.running) {
+            root.queueSessionsRequest(0, false, true);
+            return;
+        }
+        root.startSessionsRequest(offset === undefined ? 0 : offset, append === true, true);
+    }
+
+    function reconcileSessions(query, sourceIds) {
+        root.refreshSessions(query, undefined, false, sourceIds);
+    }
+
+    function querySessions(query, offset, append, sourceIds) {
+        if (sourceIds !== undefined)
+            root.setSessionsSourceIds(sourceIds);
+        root.setSessionsQuery(query);
+        if (sessionsProcess.running) {
+            root.queueSessionsRequest(offset === undefined ? 0 : offset, append === true, false);
+            return;
+        }
+        root.startSessionsRequest(offset === undefined ? 0 : offset, append === true, false);
+    }
+
+    function handleSessionsOutput(text) {
+        root.sessionsResponseDone = true;
+        var current = root.sessionsActiveRequestId === root.sessionsRequestId && root.sessionsActiveQuery === root.sessionsQuery && root.sessionsActiveSourceSignature === root.sessionsSourceSignature;
+        if (!current) {
+            root.sessionsFollowup = true;
+            root.finishSessionsProcess();
+            return;
+        }
+        root.sessionsLoading = false;
+        try {
+            var data = JSON.parse((text || "").trim());
+            var page = data.sessions || [];
+            var responseSources = root.normalizeSessionSources(data.sources);
+            var staleSelection = root.sessionSourceSelectionHasStaleIds(responseSources);
+            root.sessionsSources = responseSources;
+            if (staleSelection) {
+                var staleSignature = root.sessionsSourceSignature;
+                if (root.sessionsSourceResetSignature === staleSignature)
+                    return;
+                root.sessionsSourceIds = [];
+                root.sessionsSourceSignature = "";
+                root.sessionsSourceResetSignature = staleSignature;
+                root.sessionsRequestId += 1;
+                root.sessions = [];
+                root.sessionsOffset = 0;
+                root.sessionsTotal = 0;
+                root.sessionsHasMore = false;
+                root.sessionsLoading = true;
+                root.queueSessionsRequest(0, false, false);
+                return;
+            }
+            root.sessionsSourceResetSignature = "";
+            root.sessionsTotal = Number(data.total) || 0;
+            root.sessionsOffset = Number(data.offset) || root.sessionsActiveOffset;
+            root.sessionsHasMore = data.hasMore === true;
+            root.sessions = root.sessionsActiveAppend ? root.sessions.concat(page) : page;
+            root.sessionsError = "";
+        } catch (e) {
+            root.sessionsError = root.i18n("Could not load sessions.");
+        }
+    }
+
+    Process {
+        id: sessionsProcess
+        stdout: StdioCollector {
+            onStreamFinished: root.handleSessionsOutput(this.text)
+        }
+        onExited: function (exitCode) {
+            root.sessionsProcessExited = true;
+            if (exitCode !== 0 && root.sessionsLoading) {
+                root.sessionsLoading = false;
+                root.sessionsError = root.i18n("Could not load sessions.");
+                root.sessionsResponseDone = true;
+            }
+            root.finishSessionsProcess();
+        }
+    }
+
+    function finishSessionsProcess() {
+        if (!sessionsResponseDone || !sessionsProcessExited || !sessionsFollowup)
+            return;
+        sessionsFollowup = false;
+        var followupOffset = sessionsFollowupOffset;
+        var followupAppend = sessionsFollowupAppend;
+        var followupRefresh = sessionsFollowupRefresh;
+        sessionsFollowupOffset = 0;
+        sessionsFollowupAppend = false;
+        sessionsFollowupRefresh = false;
+        sessionsResponseDone = false;
+        sessionsProcessExited = false;
+        if (followupRefresh)
+            refreshSessions(sessionsQuery, followupOffset, followupAppend);
+        else
+            querySessions(sessionsQuery, followupOffset, followupAppend);
+    }
+
+    // Rows with an empty openKey (Muse) render no button at all.
+    function openSession(key) {
+        if (!key || openSessionProcess.running)
+            return;
+        root.sessionsNotice = "";
+        openSessionProcess.exec({
+            command: ["sh", "-c", "PYTHON3=\"$1\" exec \"$2\" --open-session \"$3\"", "ai-usage", root.settings.pythonPath || "", root.backendCommand, key]
+        });
+    }
+
+    Process {
+        id: openSessionProcess
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var data = JSON.parse((this.text || "").trim());
+                    root.sessionsNotice = data.message || "";
+                } catch (e) {
+                    root.sessionsNotice = root.i18n("Could not resume session.");
+                }
+            }
         }
     }
 
     function refresh() {
+        if (!root.providerDefaultsReady || root.providerDefaultsInitializing)
+            return;
         if (backendProcess.running)
             return;
         root.loading = true;
@@ -441,7 +1068,7 @@ ShellRoot {
         onExited: function (exitCode) {
             root.loading = false;
             if (exitCode !== 0 && root.errorText === "")
-                root.errorText = "usage backend failed";
+                root.errorText = root.i18n("usage backend failed");
         }
     }
 
@@ -450,7 +1077,11 @@ ShellRoot {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.refresh()
+        onTriggered: {
+            root.refresh();
+            if (root.sessionsViewVisible)
+                root.reconcileSessions(root.sessionsQuery);
+        }
     }
 
     Timer {
@@ -542,18 +1173,18 @@ ShellRoot {
                 // The active provider's brand logo, falling back to the app icon for
                 // providers that ship no artwork. PanelSlot tints whichever it gets to
                 // the slot's severity colour, so the panel still reads at a glance.
-                readonly property string brandLogo: root.providerIcon(root.activeProvider())
+                readonly property string brandLogo: root.providerIcon(root.pillProvider())
                 iconSource: brandLogo !== "" ? brandLogo : root.iconSource
                 active: root.popupOpen
                 slots: {
-                    var p = root.activeProvider();
+                    var p = root.pillProvider();
                     if (root.loading && root.providers.length === 0)
                         return [
                             {
                                 pct: 0,
                                 color: "#cc785c",
                                 text: "…",
-                                tooltip: "Loading"
+                                tooltip: root.i18n("Loading")
                             }
                         ];
                     return p && p.slots ? p.slots : [
@@ -561,16 +1192,16 @@ ShellRoot {
                             pct: 0,
                             color: "#cc785c",
                             text: "—",
-                            tooltip: "No data"
+                            tooltip: root.i18n("No data")
                         }
                     ];
                 }
                 stale: {
-                    var p = root.activeProvider();
+                    var p = root.pillProvider();
                     return root.errorText !== "" || (p ? !!p.stale : false);
                 }
                 hasError: {
-                    var p = root.activeProvider();
+                    var p = root.pillProvider();
                     return root.errorText !== "" || (p ? p.error !== "" : false);
                 }
                 onClicked: {
@@ -680,7 +1311,7 @@ ShellRoot {
             PanelWindow {
                 id: popup
                 implicitWidth: 460
-                implicitHeight: Math.min(680, mainColumn.implicitHeight + 40)
+                implicitHeight: Math.min(popup.screen ? Math.min(740, popup.screen.height - 60) : 720, mainColumn.implicitHeight + 40)
                 visible: root.popupOpen && root.popupOwnedBy(panel.screen)
                 color: "transparent"
                 aboveWindows: true
@@ -753,379 +1384,17 @@ ShellRoot {
                     boundsBehavior: Flickable.StopAtBounds
                     // Leave wheel events to the chart's range controls when everything
                     // already fits, which is the usual case on the usage page.
-                    interactive: contentHeight > height
+                    interactive: Math.round(contentHeight) > Math.round(height) + 1
 
                     QC.ScrollBar.vertical: QC.ScrollBar {
                         policy: contentFlick.interactive ? QC.ScrollBar.AsNeeded : QC.ScrollBar.AlwaysOff
                         width: 6
                     }
 
-                    ColumnLayout {
+                    PopupContent {
                         id: mainColumn
                         width: contentFlick.width
-                        spacing: 12
-
-                        // ── Header ──────────────────────────────────────────────────
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Item {
-                                id: headerBadge
-                                Layout.preferredWidth: 22
-                                Layout.preferredHeight: 22
-
-                                // Brand logos carry their own colours, so they render as-is.
-                                // The generic app icon has none, so it is tinted to the active
-                                // accent over a soft halo — the settings page always uses it.
-                                readonly property string brandLogo: root.showSettings ? "" : root.providerIcon(root.activeProvider())
-
-                                Image {
-                                    id: headerHalo
-                                    anchors.centerIn: parent
-                                    width: 22
-                                    height: 22
-                                    source: root.iconSource
-                                    sourceSize.width: 22
-                                    sourceSize.height: 22
-                                    visible: false
-                                }
-                                MultiEffect {
-                                    anchors.fill: headerHalo
-                                    source: headerHalo
-                                    visible: !root.showSettings && headerBadge.brandLogo === ""
-                                    colorization: 1
-                                    colorizationColor: root.activeAccent
-                                    opacity: 0.22
-                                }
-                                Image {
-                                    id: headerIcon
-                                    anchors.centerIn: parent
-                                    width: 18
-                                    height: 18
-                                    source: root.iconSource
-                                    sourceSize.width: 18
-                                    sourceSize.height: 18
-                                    visible: false
-                                }
-                                MultiEffect {
-                                    anchors.fill: headerIcon
-                                    source: headerIcon
-                                    visible: !root.showSettings && headerBadge.brandLogo === ""
-                                    colorization: 1
-                                    colorizationColor: root.activeAccent
-                                }
-                                Image {
-                                    anchors.centerIn: parent
-                                    width: 18
-                                    height: 18
-                                    source: headerBadge.brandLogo !== "" ? headerBadge.brandLogo : root.iconSource
-                                    sourceSize.width: 18
-                                    sourceSize.height: 18
-                                    fillMode: Image.PreserveAspectFit
-                                    visible: root.showSettings || headerBadge.brandLogo !== ""
-                                }
-                            }
-
-                            ColumnLayout {
-                                spacing: 0
-                                Text {
-                                    text: {
-                                        if (root.showSettings)
-                                            return "Settings";
-                                        var p = root.activeProvider();
-                                        return (p ? p.label : "AI") + " Usage";
-                                    }
-                                    font.bold: true
-                                    font.pixelSize: 15
-                                    color: "#f8fafc"
-                                }
-                                Text {
-                                    visible: root.showSettings
-                                    text: "Providers, API keys and refresh"
-                                    font.pixelSize: 10
-                                    opacity: 0.5
-                                    color: "#f8fafc"
-                                }
-                            }
-
-                            Item {
-                                Layout.fillWidth: true
-                            }
-
-                            // Settings gear / back toggle
-                            Rectangle {
-                                Layout.preferredWidth: 28
-                                Layout.preferredHeight: 26
-                                radius: 6
-                                color: gearMouse.containsMouse || root.showSettings ? Qt.rgba(1, 1, 1, 0.11) : "transparent"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: root.showSettings ? "←" : "⚙"
-                                    color: "#e2e8f0"
-                                    font.pixelSize: 14
-                                    opacity: gearMouse.containsMouse || root.showSettings ? 1.0 : 0.6
-                                }
-                                MouseArea {
-                                    id: gearMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.showSettings = !root.showSettings
-                                }
-                            }
-
-                            Rectangle {
-                                visible: !root.showSettings
-                                Layout.preferredWidth: 28
-                                Layout.preferredHeight: 26
-                                radius: 6
-                                color: refreshMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.11) : "transparent"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "⟳"
-                                    color: "#e2e8f0"
-                                    font.pixelSize: 14
-                                    opacity: refreshMouse.containsMouse ? 1.0 : 0.6
-                                    rotation: root.loading ? refreshSpin.value : 0
-                                }
-                                // simple spin while a refresh is running
-                                Item {
-                                    id: refreshSpin
-                                    property real value: 0
-                                    NumberAnimation on value {
-                                        running: root.loading
-                                        from: 0
-                                        to: 360
-                                        duration: 900
-                                        loops: Animation.Infinite
-                                    }
-                                }
-
-                                MouseArea {
-                                    id: refreshMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.refresh()
-                                }
-                            }
-                        }
-
-                        // ── Settings page ────────────────────────────────────────────
-                        SettingsPage {
-                            visible: root.showSettings
-                            Layout.fillWidth: true
-                            shell: root
-                        }
-
-                        // ── Tab bar (Plasma style: logo + name) ─────────────────────
-                        // A Flow rather than a row: the enabled provider set is
-                        // user-configurable (up to eleven) while the popup width is fixed,
-                        // so tabs have to wrap onto another line instead of running off the
-                        // edge — and each one has to be as wide as its own label, or the
-                        // longest ("Antigravity") gets clipped by its own border.
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: 4
-                            visible: root.providers.length > 1 && !root.showSettings
-
-                            Repeater {
-                                model: root.providers
-
-                                Rectangle {
-                                    required property var modelData
-                                    required property int index
-                                    readonly property bool isActive: root.activeId === modelData.id
-
-                                    width: tabContent.implicitWidth + 18
-                                    height: 32
-                                    radius: 6
-                                    color: isActive ? Qt.rgba(1, 1, 1, 0.10) : "transparent"
-                                    border.width: 1
-                                    border.color: isActive ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(1, 1, 1, 0.08)
-                                    Behavior on color {
-                                        ColorAnimation {
-                                            duration: 150
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        id: tabMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            root.activeId = modelData.id;
-                                            root.refresh();
-                                        }
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            radius: 6
-                                            color: parent.containsMouse && !isActive ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        id: tabContent
-                                        anchors.centerIn: parent
-                                        spacing: 5
-                                        Image {
-                                            readonly property string logo: root.providerIcon(modelData)
-                                            visible: logo !== ""
-                                            source: logo
-                                            Layout.preferredWidth: 12
-                                            Layout.preferredHeight: 12
-                                            sourceSize.width: 12
-                                            sourceSize.height: 12
-                                            fillMode: Image.PreserveAspectFit
-                                            opacity: isActive ? 1.0 : 0.55
-                                        }
-                                        Rectangle {
-                                            visible: root.providerIcon(modelData) === ""
-                                            Layout.preferredWidth: 8
-                                            Layout.preferredHeight: 8
-                                            radius: 4
-                                            color: modelData.accent
-                                            opacity: isActive ? 1.0 : 0.5
-                                        }
-                                        Text {
-                                            text: modelData.label
-                                            font.pixelSize: 12
-                                            font.bold: isActive
-                                            color: "#f8fafc"
-                                            opacity: isActive ? 1.0 : 0.6
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            visible: !root.showSettings
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 1
-                            color: Qt.rgba(1, 1, 1, 0.08)
-                        }
-
-                        // ── Provider detail line (plan / account) ───────────────────
-                        Text {
-                            visible: {
-                                if (root.showSettings)
-                                    return false;
-                                var p = root.activeProvider();
-                                return p && p.summary.detail !== "" && p.error === "";
-                            }
-                            Layout.fillWidth: true
-                            text: {
-                                var p = root.activeProvider();
-                                return p ? p.summary.detail : "";
-                            }
-                            color: "#94a3b8"
-                            font.pixelSize: 11
-                            elide: Text.ElideRight
-                        }
-
-                        // ── Error banner ────────────────────────────────────────────
-                        Rectangle {
-                            visible: {
-                                if (root.showSettings)
-                                    return false;
-                                var p = root.activeProvider();
-                                return p && p.error !== "";
-                            }
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: errText.implicitHeight + 18
-                            radius: 6
-                            color: Qt.rgba(0.45, 0.06, 0.06, 0.32)
-                            border.width: 1
-                            border.color: Qt.rgba(0.95, 0.30, 0.30, 0.32)
-
-                            Text {
-                                id: errText
-                                anchors.fill: parent
-                                anchors.margins: 9
-                                text: {
-                                    var p = root.activeProvider();
-                                    return p ? p.error : "";
-                                }
-                                color: "#fecaca"
-                                font.pixelSize: 12
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-
-                        // ── Usage rows ──────────────────────────────────────────────
-                        ColumnLayout {
-                            visible: !root.showSettings
-                            Layout.fillWidth: true
-                            spacing: 12
-
-                            Repeater {
-                                model: {
-                                    var p = root.activeProvider();
-                                    return p ? p.quotaWindows : [];
-                                }
-
-                                UsageRow {
-                                    required property var modelData
-                                    label: modelData.label || ""
-                                    value: modelData.pct || 0
-                                    resetText: modelData.resetText || ""
-                                    countdownText: root.countdownFor(modelData.resetAt || 0)
-                                    detail: modelData.detail || ""
-                                    barColor: root.activeAccent
-                                    showMeter: modelData.showMeter !== false
-                                }
-                            }
-                        }
-
-                        // ── Usage chart ─────────────────────────────────────────────
-                        UsageChart {
-                            extraVisible: !root.showSettings && root.settings.showChart && root.activeProvider() && root.activeProvider().summary.hasChart !== false
-                            usageHistory: root.usageHistory
-                            windows: root.windowsForProvider(root.activeId)
-                            chartWindow: root.chartWindow
-                            accent: root.activeAccent
-                            currency: root.activeProvider() ? (root.activeProvider().details.currency || "") : ""
-                            onWindowSelected: function (id) {
-                                root.selectChartWindow(id);
-                            }
-                        }
-
-                        // ── Footer ──────────────────────────────────────────────────
-                        RowLayout {
-                            visible: !root.showSettings
-                            Layout.fillWidth: true
-
-                            Rectangle {
-                                visible: root.errorText !== ""
-                                Layout.preferredWidth: 6
-                                Layout.preferredHeight: 6
-                                radius: 3
-                                color: root.dangerColor
-                                Layout.alignment: Qt.AlignVCenter
-                            }
-                            Text {
-                                visible: root.errorText !== ""
-                                text: root.errorText
-                                color: root.dangerColor
-                                font.pixelSize: 10
-                                elide: Text.ElideRight
-                            }
-                            Item {
-                                Layout.fillWidth: true
-                            }
-                            Text {
-                                visible: root.updatedAt > 0 && root.errorText === ""
-                                text: "updated " + new Date(root.updatedAt * 1000).toLocaleTimeString(Qt.locale(), Locale.ShortFormat)
-                                color: "#f8fafc"
-                                opacity: 0.45
-                                font.pixelSize: 10
-                            }
-                        }
+                        shell: root
                     }
                 }
             }

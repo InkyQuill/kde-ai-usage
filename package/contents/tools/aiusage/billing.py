@@ -1,24 +1,175 @@
-"""Organization billing aggregation and the Claude/OpenAI pricing tables."""
+"""Organization billing aggregation using rates supplied by collectors."""
+
+from __future__ import annotations
 
 import math
+from typing import NamedTuple
 
-from .contract import num
+from .contract import finite_number, num
+
+
+class UsageBucket(NamedTuple):
+    """One provider-reported usage record before session aggregation."""
+
+    provider: str
+    model: str
+    session_id: str
+    input_tokens: int | float = 0
+    output_tokens: int | float = 0
+    cache_read_tokens: int | float = 0
+    cache_write_tokens: int | float = 0
+    reasoning_tokens: int | float = 0
+    provider_cost_usd: int | float | None = None
+    source: str = ""
+
+
+def _token_count(value):
+    try:
+        value = num(value)
+        return max(0, math.floor(value)) if math.isfinite(value) else 0
+    except (OverflowError, TypeError, ValueError):
+        return 0
+
+
+def _bucket_tokens(bucket):
+    return {
+        "input": _token_count(bucket.input_tokens),
+        "output": _token_count(bucket.output_tokens),
+        "cache_read": _token_count(bucket.cache_read_tokens),
+        "cache_write": _token_count(bucket.cache_write_tokens),
+        "reasoning": _token_count(bucket.reasoning_tokens),
+    }
+
+
+def total_tokens(buckets):
+    """Sum of input/output/cache tokens across a set of usage buckets."""
+    return sum(sum(_bucket_tokens(bucket)[key] for key in ("input", "output", "cache_read", "cache_write")) for bucket in buckets)
+
+
+def _bucket_cost(bucket, price):
+    if not isinstance(price, dict) or "input" not in price or "output" not in price:
+        return None
+    input_rate = finite_number(price["input"], minimum=0)
+    output_rate = finite_number(price["output"], minimum=0)
+    if input_rate is None or output_rate is None:
+        return None
+    cached_value = price.get("cached", input_rate)
+    cached_rate = input_rate if cached_value is None else finite_number(cached_value, minimum=0)
+    if cached_rate is None:
+        return None
+    tokens = _bucket_tokens(bucket)
+    # Providers disagree on whether cache reads are counted inside the input
+    # total (OpenAI) or reported alongside it (Anthropic). Bill every cache
+    # read at the cached rate either way, and only subtract the part that was
+    # actually inside input, so neither convention drops tokens or leaves a
+    # negative full-rate remainder. Clamping the billed amount to input, as
+    # this once did, made a cache-heavy Claude session priced at a fraction
+    # of its real cost — the bulk of its tokens vanished from the bill.
+    cached = tokens["cache_read"]
+    inside_input = min(cached, tokens["input"])
+    uncached = tokens["input"] - inside_input + tokens["cache_write"]
+    output = tokens["output"] + tokens["reasoning"]
+    cost = (uncached / 1_000_000) * input_rate
+    cost += (cached / 1_000_000) * cached_rate
+    cost += (output / 1_000_000) * output_rate
+    return cost if math.isfinite(cost) else None
+
+
+def _provider_cost(bucket, token_total):
+    cost = bucket.provider_cost_usd
+    if type(cost) not in (int, float):
+        return None
+    try:
+        cost = float(cost)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(cost) or cost < 0:
+        return None
+    return cost if cost > 0 or token_total == 0 else None
+
+
+def aggregate_session_usage(buckets, pricing):
+    """Price normalized buckets with independent coverage and provenance."""
+    costs = []
+    actual_costs = []
+    estimated_costs = []
+    actual = 0
+    estimated = 0
+    priced = 0
+    unpriced = 0
+    for bucket in buckets:
+        tokens = _bucket_tokens(bucket)
+        token_total = sum(tokens.values())
+        provider_cost = _provider_cost(bucket, token_total)
+        if token_total <= 0 and provider_cost is None:
+            continue
+        provider_rates = pricing.get(bucket.provider) if isinstance(pricing, dict) else {}
+        provider_rates = provider_rates if isinstance(provider_rates, dict) else {}
+        price = provider_rates.get(bucket.model) if bucket.model else None
+        if provider_cost is not None:
+            costs.append(provider_cost)
+            actual_costs.append(provider_cost)
+            actual += 1
+            priced += 1
+        elif token_total > 0 and price is not None:
+            estimate = _bucket_cost(bucket, price)
+            if estimate is not None:
+                costs.append(estimate)
+                estimated_costs.append(estimate)
+                estimated += 1
+                priced += 1
+            else:
+                unpriced += 1
+        else:
+            unpriced += 1
+    if priced == 0:
+        return {"costStatus": "unavailable"}
+    total_cost = math.fsum(costs)
+    actual_cost = math.fsum(actual_costs)
+    estimated_cost = math.fsum(estimated_costs)
+    if not all(math.isfinite(cost) for cost in (total_cost, actual_cost, estimated_cost)):
+        return {"costStatus": "unavailable"}
+    provenance = "mixed" if actual and estimated else "actual" if actual else "estimated"
+    result = {
+        "costUSD": total_cost,
+        "costStatus": "partial" if unpriced else "exact",
+        "costProvenance": provenance,
+    }
+    if provenance == "mixed":
+        result["costBreakdown"] = {"actualUSD": actual_cost, "estimatedUSD": estimated_cost}
+    return result
 
 
 def price_models(entries, pricing):
+    """Group token entries by model and price them against `pricing`
+    ({model: {input, output, optional cached}}, USD per million tokens).
+
+    A model missing from `pricing` still shows up, just unpriced. A pricing row
+    carrying `cached` bills `cached_tokens` at that lower rate and the rest of
+    the prompt at the input rate. An entry without `cached_tokens` bills its
+    entire prompt at the input rate, even if the catalog has a cache rate."""
     models = {}
     total_in = 0
     total_out = 0
     for entry in entries:
         name = entry.get("model") or "unknown"
-        in_ = math.floor(num(entry.get("input_tokens")))
-        out_ = math.floor(num(entry.get("output_tokens")))
+        in_ = _token_count(entry.get("input_tokens"))
+        out_ = _token_count(entry.get("output_tokens"))
+        cached = _token_count(entry.get("cached_tokens"))
         price = pricing.get(name)
         m = models.setdefault(name, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "priced": False})
         m["input_tokens"] += in_
         m["output_tokens"] += out_
         if price is not None:
-            m["cost_usd"] += (in_ / 1000000) * num(price["input"]) + (out_ / 1000000) * num(price["output"])
+            # Bill every cached token at the cached rate, subtracting only the
+            # part that was inside the input total — providers differ on
+            # whether cached tokens are counted inside input or alongside it,
+            # and clamping the billed amount to input dropped the difference.
+            billable_cached = cached if price.get("cached") is not None else 0
+            inside_input = min(billable_cached, in_)
+            m["cost_usd"] += ((in_ - inside_input) / 1000000) * num(price["input"]) + (out_ / 1000000) * num(price["output"])
+            if billable_cached:
+                m["cost_usd"] += (billable_cached / 1000000) * num(price["cached"])
             m["priced"] = True
         total_in += in_
         total_out += out_
@@ -33,109 +184,3 @@ def price_models(entries, pricing):
 
 def empty_org_usage():
     return {"models": {}, "totalInputTokens": 0, "totalOutputTokens": 0, "totalCostUSD": 0}
-
-
-# Keyed by the API model ID exactly as the organization usage endpoints
-# report it. A model missing here just comes back unpriced (priced: false in
-# price_models' output) rather than erroring — see price_models() above.
-#
-# Verified against https://platform.claude.com/docs/en/about-claude/pricing
-# and .../models/overview on 2026-08-06. These tables inherently go stale as
-# providers ship new models or change prices — re-verify against the live
-# pages rather than trusting this comment's date.
-CLAUDE_PRICING = {
-    # Claude 5 generation (current)
-    "claude-fable-5": {"input": 10, "output": 50},
-    "claude-mythos-5": {"input": 10, "output": 50},
-    "claude-mythos-preview": {"input": 10, "output": 50},
-    "claude-opus-5": {"input": 5, "output": 25},
-    # Sonnet 5 introductory pricing ($2/$10) runs through 2026-08-31, then
-    # steps up to $3/$15 — the flat table below can't express a pricing
-    # change that hasn't happened yet, so this reflects today's rate.
-    "claude-sonnet-5": {"input": 2, "output": 10},
-    "claude-haiku-4-5": {"input": 1, "output": 5},
-    "claude-haiku-4-5-20251001": {"input": 1, "output": 5},
-    # Claude 4.x generation (still billable, superseded by the above)
-    "claude-opus-4-8": {"input": 5, "output": 25},
-    "claude-opus-4-7": {"input": 5, "output": 25},
-    "claude-opus-4-6": {"input": 5, "output": 25},
-    "claude-opus-4-5": {"input": 5, "output": 25},
-    "claude-opus-4-5-20251101": {"input": 5, "output": 25},
-    "claude-sonnet-4-6": {"input": 3, "output": 15},
-    "claude-sonnet-4-5": {"input": 3, "output": 15},
-    "claude-sonnet-4-5-20250929": {"input": 3, "output": 15},
-    "claude-sonnet-4": {"input": 3, "output": 15},
-    "claude-opus-4-1": {"input": 15, "output": 75},
-    "claude-opus-4": {"input": 15, "output": 75},
-    "claude-haiku-4": {"input": 0.8, "output": 4},
-    # Claude 3.x generation (retired, kept for old usage-window data)
-    "claude-sonnet-3-5": {"input": 3, "output": 15},
-    "claude-haiku-3-5": {"input": 0.8, "output": 4},
-    "claude-3-5-sonnet-20241022": {"input": 3, "output": 15},
-    "claude-3-5-sonnet-20240620": {"input": 3, "output": 15},
-    "claude-3-5-haiku-20241022": {"input": 0.8, "output": 4},
-    "claude-3-opus-20240229": {"input": 15, "output": 75},
-}
-
-# Verified against https://developers.openai.com/api/docs/pricing on
-# 2026-08-06 (same staleness caveat as CLAUDE_PRICING above).
-OPENAI_PRICING = {
-    # GPT-5.x generation (current)
-    "gpt-5.6-sol": {"input": 5, "output": 30},
-    "gpt-5.6-terra": {"input": 2, "output": 12},
-    "gpt-5.6-luna": {"input": 0.2, "output": 1.2},
-    "gpt-5.5": {"input": 5, "output": 30},
-    "gpt-5.5-pro": {"input": 30, "output": 180},
-    "gpt-5.5-cyber": {"input": 12.5, "output": 75},
-    "gpt-5.4": {"input": 2.5, "output": 15},
-    "gpt-5.4-mini": {"input": 0.75, "output": 4.5},
-    "gpt-5.4-nano": {"input": 0.2, "output": 1.25},
-    "gpt-5.4-pro": {"input": 30, "output": 180},
-    "gpt-5.3-chat-latest": {"input": 1.75, "output": 14},
-    "gpt-5.3-codex": {"input": 1.75, "output": 14},
-    "gpt-5.2": {"input": 1.75, "output": 14},
-    "gpt-5.2-pro": {"input": 21, "output": 168},
-    "gpt-5.2-chat-latest": {"input": 1.75, "output": 14},
-    "gpt-5.1": {"input": 1.25, "output": 10},
-    "gpt-5": {"input": 1.25, "output": 10},
-    "gpt-5-mini": {"input": 0.25, "output": 2},
-    "gpt-5-nano": {"input": 0.05, "output": 0.4},
-    "gpt-5-pro": {"input": 15, "output": 120},
-    "gpt-5-search-api": {"input": 1.25, "output": 10},
-    "chat-latest": {"input": 5, "output": 30},
-    # GPT-4.1 / GPT-4o generation
-    "gpt-4.1": {"input": 2, "output": 8},
-    "gpt-4.1-mini": {"input": 0.4, "output": 1.6},
-    "gpt-4.1-nano": {"input": 0.1, "output": 0.4},
-    "gpt-4o": {"input": 2.5, "output": 10},
-    "gpt-4o-2024-11-20": {"input": 2.5, "output": 10},
-    "gpt-4o-2024-08-06": {"input": 2.5, "output": 10},
-    "gpt-4o-2024-05-13": {"input": 5, "output": 15},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.6},
-    "gpt-4o-mini-2024-07-18": {"input": 0.15, "output": 0.6},
-    # o-series reasoning models
-    "o1": {"input": 15, "output": 60},
-    "o1-2024-12-17": {"input": 15, "output": 60},
-    "o1-pro": {"input": 150, "output": 600},
-    "o1-mini": {"input": 1.1, "output": 4.4},
-    "o1-mini-2024-09-12": {"input": 1.1, "output": 4.4},
-    "o3": {"input": 2, "output": 8},  # was $10/$40 when this table was first written — repriced since
-    "o3-pro": {"input": 20, "output": 80},
-    "o3-mini": {"input": 1.1, "output": 4.4},
-    "o4-mini": {"input": 1.1, "output": 4.4},
-    # Legacy GPT-4 / GPT-3.5 (retired, kept for old usage-window data)
-    "gpt-4-turbo": {"input": 10, "output": 30},
-    "gpt-4-turbo-2024-04-09": {"input": 10, "output": 30},
-    "gpt-4": {"input": 30, "output": 60},
-    "gpt-4-0613": {"input": 30, "output": 60},
-    "gpt-4-32k": {"input": 60, "output": 120},
-    "gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
-    "gpt-3.5-turbo-0125": {"input": 0.5, "output": 1.5},
-    "gpt-3.5-turbo-1106": {"input": 1, "output": 2},
-    "gpt-3.5-turbo-instruct": {"input": 1.5, "output": 2},
-    "davinci-002": {"input": 2, "output": 2},
-    "babbage-002": {"input": 0.4, "output": 0.4},
-    # Embeddings (output is always 0 — no generated tokens)
-    "text-embedding-3-small": {"input": 0.02, "output": 0},
-    "text-embedding-3-large": {"input": 0.13, "output": 0},
-}

@@ -29,6 +29,21 @@
     <entry name="openrouterEnabled" type="Bool">
       <default>false</default>
     </entry>
+    <entry name="ollamaEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="selfhostedEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="selfhostedEndpoint" type="String">
+      <default></default>
+    </entry>
+    <entry name="selfhostedEngine" type="String">
+      <default>auto</default>
+    </entry>
+    <entry name="selfhostedKey" type="String">
+      <default></default>
+    </entry>
     <entry name="grokEnabled" type="Bool">
       <default>true</default>
     </entry>
@@ -44,10 +59,50 @@
     <entry name="kimiEnabled" type="Bool">
       <default>false</default>
     </entry>
+    <entry name="cursorEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="clineEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="museEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="opencodeEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="providerDefaultsApplied" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="museQuotaEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <!-- Optional popup views ahead of provider tabs (mirrors FeatureTabs.js) -->
+    <entry name="overviewEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="spendEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="sessionsEnabled" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="costHistoryDays" type="Int">
+      <default>30</default>
+    </entry>
+    <entry name="costHistoryMetric" type="String">
+      <default>cost</default>
+    </entry>
+    <entry name="museApiKey" type="String">
+      <default></default>
+    </entry>
     <entry name="mistralApiKey" type="String">
       <default></default>
     </entry>
     <entry name="openrouterApiKey" type="String">
+      <default></default>
+    </entry>
+    <entry name="ollamaApiKey" type="String">
       <default></default>
     </entry>
     <entry name="grokApiKey" type="String">
@@ -82,6 +137,11 @@
     <entry name="useThemeAccent" type="Bool">
       <default>false</default>
     </entry>
+    <!-- Popup tab open when the widget was last used (a provider or feature
+         tab id); empty = the first enabled provider -->
+    <entry name="lastTab" type="String">
+      <default></default>
+    </entry>
     <!-- Comma-separated pinned tab ids (e.g. "claude,openai"); empty = show active tab -->
     <entry name="pinnedTab" type="String">
       <default></default>
@@ -90,13 +150,21 @@
     <entry name="chartWindow" type="String">
       <default>weekly</default>
     </entry>
-    <!-- Remembered chart granularity ("5h" | "24h" | "7d"), shared across tabs so the time range carries when switching services -->
+    <!-- Remembered chart granularity ("5h" | "24h" | "7d" | "30d"), shared across tabs so the time range carries when switching services -->
     <entry name="chartGranularity" type="String">
       <default>7d</default>
+    </entry>
+    <!-- Antigravity model filter: "both", "combined", "gemini", or "rest" -->
+    <entry name="antigravityChartFilter" type="String">
+      <default>both</default>
     </entry>
     <!-- Poll interval in seconds (applies to all services) -->
     <entry name="pollIntervalSec" type="Int">
       <default>300</default>
+    </entry>
+    <!-- Compact Plasma panel rotation interval; 0 keeps the existing pin display -->
+    <entry name="panelRotationIntervalSec" type="Int">
+      <default>0</default>
     </entry>
     <!-- Interpreter for the shell tools, exported as $PYTHON3. Empty = let
          tools/sh/python-interp.sh search PATH. Set it to pin a specific
@@ -119,6 +187,9 @@
     </entry>
     <entry name="backgroundHints" type="Int">
       <default>1</default>
+    </entry>
+    <entry name="popupDecoration" type="Int">
+      <default>0</default>
     </entry>
   </group>
 </kcfg>

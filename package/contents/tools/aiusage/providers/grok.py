@@ -13,7 +13,7 @@ import time
 from collections import deque
 
 from ..contract import epoch_of
-from ..http import as_json, fetch_json
+from ..http import as_json, fetch_json, resolve_key
 
 CLIENT_VER = "0.2.106"
 
@@ -44,39 +44,27 @@ def _first_present(*vals):
     return None
 
 
-def _read_key_file(path):
-    if not os.path.isfile(path):
-        return ""
-    try:
-        with open(path) as f:
-            return f.read().translate(str.maketrans("", "", "\n\r ")).strip()
-    except OSError:
-        return ""
+def grok_home():
+    """``$GROK_HOME`` when set, else ``~/.grok`` — where the Grok CLI keeps its
+    login, settings, session logs and unified log, on every platform."""
+    return os.path.expanduser(os.environ.get("GROK_HOME") or "~/.grok")
 
 
 def _resolve_api_key():
-    key = os.environ.get("WIDGET_XAI_API_KEY") or os.environ.get("WIDGET_GROK_API_KEY") or ""
-    if not key:
-        key = os.environ.get("XAI_API_KEY", "")
-    if not key:
-        key = os.environ.get("GROK_API_KEY", "")
-    if not key:
-        for p in (
-            os.path.expanduser("~/.config/xai/api-key"),
-            os.path.expanduser("~/.xai/api-key"),
-            os.path.expanduser("~/.config/grok/api-key"),
-        ):
-            key = _read_key_file(p)
-            if key:
-                break
-    return key
+    return resolve_key(
+        ("WIDGET_XAI_API_KEY", "WIDGET_GROK_API_KEY"),
+        ("XAI_API_KEY", "GROK_API_KEY"),
+        os.path.expanduser("~/.config/xai/api-key"),
+        os.path.expanduser("~/.xai/api-key"),
+        os.path.expanduser("~/.config/grok/api-key"),
+    )
 
 
 def _read_grok_auth(auth_file):
     if not os.path.isfile(auth_file):
         return {}
     try:
-        with open(auth_file) as f:
+        with open(auth_file, encoding="utf-8") as f:
             data = as_json(f.read())
     except OSError:
         data = None
@@ -101,7 +89,7 @@ def _read_grok_auth(auth_file):
 
 def _grok_local_stats():
     default = {"sessionCount": 0, "totalToolCalls": 0, "totalTokens": 0, "models": [], "totalSessionSeconds": 0}
-    sessions_dir = os.path.expanduser("~/.grok/sessions")
+    sessions_dir = os.path.join(grok_home(), "sessions")
     if not os.path.isdir(sessions_dir):
         return default
     paths = []
@@ -117,7 +105,7 @@ def _grok_local_stats():
     docs = []
     for p in paths:
         try:
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 d = as_json(f.read())
         except OSError:
             d = None
@@ -182,7 +170,7 @@ def _grok_account_meta(access_token, team_id_hint, user_id_hint, client_ver):
 
 def _tail_lines(path, n):
     try:
-        with open(path, errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return list(deque(f, maxlen=n))
     except OSError:
         return []
@@ -366,17 +354,17 @@ def get_grok_usage():
     api_key = _resolve_api_key()
 
     default_model = ""
-    settings_path = os.path.expanduser("~/.grok/user-settings.json")
+    settings_path = os.path.join(grok_home(), "user-settings.json")
     if os.path.isfile(settings_path):
         try:
-            with open(settings_path) as f:
+            with open(settings_path, encoding="utf-8") as f:
                 s = as_json(f.read())
         except OSError:
             s = None
         if isinstance(s, dict):
             default_model = s.get("defaultModel") or ""
 
-    auth = _read_grok_auth(os.path.expanduser("~/.grok/auth.json"))
+    auth = _read_grok_auth(os.path.join(grok_home(), "auth.json"))
     access_token = auth.get("access_token", "")
     email = auth.get("email", "")
     user_id = auth.get("user_id", "")
@@ -395,7 +383,7 @@ def get_grok_usage():
         user_id, team_id, team_name, tier_id, team_blocked, blocked_reasons = _grok_account_meta(access_token, team_id, user_id, CLIENT_VER)
 
     free_usage, local_billing = {}, {}
-    unified_log = os.path.expanduser("~/.grok/logs/unified.jsonl")
+    unified_log = os.path.join(grok_home(), "logs", "unified.jsonl")
     if os.path.isfile(unified_log):
         lines = _tail_lines(unified_log, 5000)
         free_usage = _resolve_free_usage(_extract_free_usage(lines), now)

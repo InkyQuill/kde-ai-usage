@@ -9,23 +9,33 @@
       metadata = builtins.fromJSON (builtins.readFile ./package/metadata.json);
     in {
       packages = forAllSystems (system:
-        let pkgs = import nixpkgs { inherit system; };
+        let pkgs = nixpkgs.legacyPackages.${system};
         in {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "ai-usage-widget";
             version = metadata.KPlugin.Version;
-            src = ./package;
+            # translate/ comes along so the .mo catalogs (git-ignored) can be compiled.
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [ ./package ./translate ];
+            };
+            nativeBuildInputs = [ pkgs.gettext ];
 
             dontConfigure = true;
-            dontBuild = true;
+
+            buildPhase = ''
+              runHook preBuild
+              bash translate/build.sh
+              runHook postBuild
+            '';
 
             installPhase = ''
               runHook preInstall
-              
+
               # Install plasmoid package
               root=$out/share/plasma/plasmoids/org.muddyblack.aiUsageWidget
               mkdir -p "$root"
-              cp -r . "$root/"
+              cp -r package/. "$root/"
 
               # The shell tools resolve Python from PATH, but plasmashell inherits the
               # systemd user session's PATH, which on NixOS has no Python at all — the
@@ -41,7 +51,7 @@
 
               # Register icon in hicolor theme so Plasma Widget Explorer picks it up
               mkdir -p "$out/share/icons/hicolor/scalable/apps"
-              cp contents/icons/org.muddyblack.aiUsageWidget.svg "$out/share/icons/hicolor/scalable/apps/org.muddyblack.aiUsageWidget.svg"
+              cp package/contents/icons/org.muddyblack.aiUsageWidget.svg "$out/share/icons/hicolor/scalable/apps/org.muddyblack.aiUsageWidget.svg"
 
               runHook postInstall
             '';
@@ -50,7 +60,7 @@
               description = "Multi-provider AI usage widget for KDE Plasma 6";
               license = licenses.mit;
               platforms = platforms.linux;
-              homepage = "https://github.com/Muddyblack/kde-ai-usage";
+              homepage = "https://github.com/Muddyblack/ai-usage-widget";
             };
           };
 
@@ -65,7 +75,7 @@
 
       apps = forAllSystems (system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = nixpkgs.legacyPackages.${system};
           quickshellDesktop = pkgs.makeDesktopItem {
             name = "org.quickshell";
             desktopName = "Quickshell";
@@ -78,7 +88,7 @@
             noDisplay = true;
             categories = [ "Utility" ];
           };
-        in {
+        in rec {
           view = {
             type = "app";
             program = toString (pkgs.writeShellScript "view" ''
@@ -87,7 +97,9 @@
                 echo "  'nix run .#view' previews your working copy, so run it from the repo root." >&2
                 exit 1
               fi
-              exec nix shell nixpkgs#kdePackages.plasma-sdk nixpkgs#kdePackages.plasma-desktop -c plasmoidviewer \
+              export PATH=${pkgs.lib.makeBinPath [ pkgs.kdePackages.plasma-sdk pkgs.kdePackages.plasma-desktop pkgs.gettext ]}:"$PATH"
+              "$PWD/translate/build.sh"
+              exec plasmoidviewer \
                 -a "$PWD/package" -f "''${1:-planar}"
             '');
           };
@@ -100,6 +112,7 @@
               name="$(basename "$here")"
               out="$here/$name-$ver.plasmoid"
               rm -f "$out"
+              PATH=${pkgs.gettext}/bin:"$PATH" "$here/translate/build.sh"
               (cd "$here/package" && ${pkgs.zip}/bin/zip -r "$out" . -x '*.swp' '*~')
               echo "wrote $out"
             '');
@@ -138,27 +151,49 @@
               ${pkgs.quickshell}/bin/qs -p "$config"
             '');
           };
+          view-hyprland = hyprland;
         });
 
       devShells = forAllSystems (system:
-        let pkgs = import nixpkgs { inherit system; };
+        let pkgs = nixpkgs.legacyPackages.${system};
         in {
           default = pkgs.mkShell {
             name = "ai-usage-widget-dev";
             packages = with pkgs; [
               qt6.qtdeclarative
+              kdePackages.kirigami
               kdePackages.kpackage
+              kdePackages.libplasma
+              kdePackages.plasma5support
               kdePackages.plasma-sdk
+              gettext
               pre-commit
               zip
               python3
               ruff
+              jq
+              nodejs
             ];
             shellHook = ''
+              # qmllint does not discover KDE's QML modules from the Qt import
+              # path automatically. Keep this in the development shell so the
+              # same imports work for CI, pre-commit, and local editor checks.
+              export QML_IMPORT_PATH="${pkgs.kdePackages.kirigami.unwrapped}/lib/qt-6/qml:${pkgs.kdePackages.libplasma}/lib/qt-6/qml:${pkgs.kdePackages.plasma5support}/lib/qt-6/qml:${pkgs.qt6.qtdeclarative}/lib/qt-6/qml''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
               pre-commit install -f --install-hooks
               echo "ai-usage-widget dev shell ready"
               echo "  make help        — list targets (view, install, pack, tag)"
             '';
+          };
+
+          # The Windows tray app (windows/) runs on Linux too, which is how it is
+          # developed: `nix develop .#windows`, then `python windows/app.py`.
+          # Separate because only people working on that app want PySide6.
+          windows = pkgs.mkShell {
+            name = "ai-usage-widget-windows";
+            packages = [
+              (pkgs.python3.withPackages (ps: [ ps.pyside6 ps.psutil ]))
+              pkgs.ruff
+            ];
           };
         });
     };
